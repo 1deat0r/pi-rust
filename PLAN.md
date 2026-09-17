@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Extension slice L — user_bash fail-closed
+
+Ported upstream #9068 (509ee2bd0, previously assessed blocked —
+runner half is portable): `emit_user_bash` validates results and
+fails closed on handler errors (report + propagate, no fallback).
+Two pins (error + 6-shape invalid matrix), TDD red-first. No row
+promoted (extension slice; routing + live execution open). Gate
+green: extensions lib 74/74, extensions_parity 9/9, scoped rustfmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Pre-existing clippy failures verified
+identical on clean HEAD. Next: commit + push, then continue the
+sweep.
+
 ### Resource slice M — symlink-root pin
 
 Closed the RES-006 symlink residual with a recursive-discovery pin

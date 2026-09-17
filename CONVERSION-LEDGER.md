@@ -2,6 +2,36 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Extension slice L: user_bash fail-closed (last updated 2026-09-17)
+
+Slice L (drift era, upstream #9068 fixed by 509ee2bd0 — previously
+assessed as blocked on extension-routed bash, but the runner half
+ports cleanly): `emit_user_bash` now fails closed — handler errors
+report to listeners then propagate as `Err` (no later handlers, no
+local-execution fallback), defined-but-invalid results are rejected
+with the upstream `Invalid user_bash handler result` diagnostic
+(exactly-one-of `{ operations }`/`{ result }`; `result` must carry
+the full `BashResult` wire shape), and `None` continues propagation.
+The `exec`-callable operations arm has no JSON expression
+(`HandlerFn` results are JSON-decoded, never callables), so
+operations objects fail closed by construction until a Rust-native
+operations handle exists — recorded in the validator comment, not
+silently absorbed. Signature change `Option<Value>` →
+`Result<Option<Value>, String>`; no in-tree callers existed. Two
+pins (error fail-closed + 6-shape invalid matrix with valid-result
+acceptance and `None` propagation). TDD red first (new pins failed
+to compile against the old signature; matrix pin caught an
+over-permissive operations arm). Gate: extensions lib 74/74,
+extensions_parity 9/9, scoped rustfmt clean, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0). Pre-existing
+workspace clippy failures (`pi-tui` dead code, `pi-agent`
+module-inception) verified identical on clean HEAD via stash; no
+new clippy findings in the touched file. No parity row promoted
+(extension deterministic slice; interactive routing + live
+execution still open). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Resource slice M: symlink-root pin (last updated 2026-09-17)
 
 Slice M (RES-006 residual): new pin proving recursive package

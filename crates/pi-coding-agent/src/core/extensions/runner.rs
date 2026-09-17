@@ -1279,7 +1279,76 @@ impl ExtensionRunner {
         result
     }
 
-    pub fn emit_user_bash(&self, event: &Value) -> Option<Value> {
+    /// Validate a user_bash handler result (upstream
+    /// `isUserBashEventResult` from #9662 fixing #9068): `None`
+    /// continues propagation; a defined value must be an object with
+    /// exactly one of `operations` or `result`. `result` must carry
+    /// the full `BashResult` shape (`output: string`,
+    /// `exitCode?: number`, `cancelled`/`truncated: boolean`,
+    /// `fullOutputPath?: string`). `operations` must be an object
+    /// with a callable `exec`: `HandlerFn` results are JSON (opaque
+    /// handles are not expressible — native factories return
+    /// operations through direct registration instead), so no
+    /// JSON-decoded `operations` object can satisfy the upstream
+    /// contract and every such shape is rejected until a Rust-native
+    /// operations handle exists.
+    fn is_user_bash_event_result(value: &Value) -> bool {
+        let candidate = match value.as_object() {
+            Some(candidate) => candidate,
+            None => return false,
+        };
+        let has_operations = !candidate
+            .get("operations")
+            .is_none_or(serde_json::Value::is_null);
+        let has_result = !candidate
+            .get("result")
+            .is_none_or(serde_json::Value::is_null);
+        if has_operations == has_result {
+            return false;
+        }
+        if has_operations {
+            // Upstream requires `typeof operations.exec === "function"`:
+            // JSON-decoded values never carry callables, so every
+            // operations object fails closed here by construction.
+            return false;
+        }
+        let result = match candidate.get("result") {
+            Some(result) => result,
+            None => return false,
+        };
+        let shape = match result.as_object() {
+            Some(shape) => shape,
+            None => return false,
+        };
+        if !shape.get("output").is_some_and(|output| output.is_string()) {
+            return false;
+        }
+        if let Some(exit_code) = shape.get("exitCode") {
+            if !(exit_code.is_null() || exit_code.is_number()) {
+                return false;
+            }
+        }
+        if !shape
+            .get("cancelled")
+            .is_some_and(serde_json::Value::is_boolean)
+        {
+            return false;
+        }
+        if !shape
+            .get("truncated")
+            .is_some_and(serde_json::Value::is_boolean)
+        {
+            return false;
+        }
+        if let Some(path) = shape.get("fullOutputPath") {
+            if !(path.is_null() || path.is_string()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn emit_user_bash(&self, event: &Value) -> Result<Option<Value>, String> {
         let context = self.create_context();
         for extension in &self.extensions {
             let Some(handlers) = extension.handlers.get("user_bash") else {
@@ -1287,15 +1356,29 @@ impl ExtensionRunner {
             };
             for handler in handlers {
                 match Self::call_handler(handler, &context, event) {
-                    Ok(Some(value)) if !value.is_null() => return Some(value),
-                    Ok(_) => {}
+                    // `None` continues to the next handler, then local
+                    // execution if none handles the event (upstream #9662).
+                    Ok(None) => {}
+                    Ok(Some(value)) => {
+                        if !Self::is_user_bash_event_result(&value) {
+                            let message = "Invalid user_bash handler result: return undefined for local execution or exactly one valid { operations } or { result } object".to_string();
+                            self.handler_error(&extension.path, "user_bash", message.clone());
+                            return Err(message);
+                        }
+                        return Ok(Some(value));
+                    }
+                    // Fail closed (upstream #9068): the runner already
+                    // reported the error; propagate it so the caller
+                    // aborts instead of falling back to local execution
+                    // or consulting later handlers.
                     Err(error) => {
-                        self.handler_error(&extension.path, "user_bash", error);
+                        self.handler_error(&extension.path, "user_bash", error.clone());
+                        return Err(error);
                     }
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     pub fn emit_before_provider_request(&self, request: Value) -> Value {
@@ -1932,6 +2015,156 @@ mod tests {
             *observed.lock().unwrap_or_else(|error| error.into_inner()),
             Some(payload)
         );
+    }
+
+    #[test]
+    fn user_bash_fails_closed_on_handler_error_upstream_9068() {
+        // Upstream #9068 (fixed by 509ee2bd0): a throwing user_bash
+        // handler must reject after reporting — never fall back to
+        // local execution or consult later handlers.
+        let mut throwing = Extension {
+            path: "throws.js".into(),
+            ..Default::default()
+        };
+        throwing.handlers.insert(
+            "user_bash".into(),
+            vec![Arc::new(|_, _| Err("Routing failed".to_string()))],
+        );
+        let mut later = Extension {
+            path: "later.js".into(),
+            ..Default::default()
+        };
+        let reached = Arc::new(Mutex::new(false));
+        later.handlers.insert(
+            "user_bash".into(),
+            vec![{
+                let reached = Arc::clone(&reached);
+                Arc::new(move |_, _| {
+                    *reached.lock().unwrap_or_else(|error| error.into_inner()) = true;
+                    Ok(None)
+                })
+            }],
+        );
+        let runner = runner_with(vec![throwing, later]);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let _unsub = runner.on_error({
+            let errors = Arc::clone(&errors);
+            Arc::new(move |error| {
+                errors
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(error)
+            })
+        });
+        let event = json!({"type": "user_bash", "command": "pwd"});
+        let result = runner.emit_user_bash(&event);
+        assert_eq!(result, Err("Routing failed".to_string()));
+        assert!(!*reached.lock().unwrap_or_else(|error| error.into_inner()));
+        let reported = errors.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].event, "user_bash");
+        assert_eq!(reported[0].error, "Routing failed");
+    }
+
+    #[test]
+    fn user_bash_rejects_invalid_results_and_accepts_valid_shapes_upstream_9068() {
+        // Upstream #9068 (fixed by 509ee2bd0): defined-but-invalid
+        // handler results fail closed with the upstream diagnostic;
+        // exactly-one-of `{ operations }` / `{ result }` is accepted.
+        let invalid: Vec<Value> = vec![
+            json!({}),
+            json!({"operations": null}),
+            json!({"operations": {}}),
+            json!({"result": null}),
+            json!({"result": {"output": "handled"}}),
+            json!({
+                "operations": {},
+                "result": {"output": "handled", "exitCode": 0, "cancelled": false, "truncated": false},
+            }),
+        ];
+        for value in &invalid {
+            let shape = value.clone();
+            let mut extension = Extension {
+                path: "invalid-result.js".into(),
+                ..Default::default()
+            };
+            extension.handlers.insert(
+                "user_bash".into(),
+                vec![Arc::new(move |_, _| Ok(Some(shape.clone())))],
+            );
+            let runner = runner_with(vec![extension]);
+            let errors = Arc::new(Mutex::new(Vec::new()));
+            let _unsub = runner.on_error({
+                let errors = Arc::clone(&errors);
+                Arc::new(move |error| {
+                    errors
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(error)
+                })
+            });
+            let event = json!({"type": "user_bash", "command": "pwd"});
+            let result = runner.emit_user_bash(&event);
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("Invalid user_bash handler result")),
+                "invalid shape must fail closed: {value}"
+            );
+            let reported = errors.lock().unwrap_or_else(|error| error.into_inner());
+            assert_eq!(reported.len(), 1);
+            assert_eq!(reported[0].event, "user_bash");
+            assert!(reported[0]
+                .error
+                .contains("Invalid user_bash handler result"));
+        }
+
+        let valid_result = json!({"result": {"output": "handled", "exitCode": 0, "cancelled": false, "truncated": false}});
+        let mut extension = Extension {
+            path: "valid-result.js".into(),
+            ..Default::default()
+        };
+        extension.handlers.insert(
+            "user_bash".into(),
+            vec![Arc::new(move |_, _| Ok(Some(valid_result.clone())))],
+        );
+        let runner = runner_with(vec![extension]);
+        let event = json!({"type": "user_bash", "command": "result"});
+        assert_eq!(
+            runner.emit_user_bash(&event),
+            Ok(Some(
+                json!({"result": {"output": "handled", "exitCode": 0, "cancelled": false, "truncated": false}})
+            ))
+        );
+
+        // Propagation: `None` continues to the next handler.
+        let mut first = Extension {
+            path: "first.js".into(),
+            ..Default::default()
+        };
+        first
+            .handlers
+            .insert("user_bash".into(), vec![Arc::new(|_, _| Ok(None))]);
+        let mut second = Extension {
+            path: "second.js".into(),
+            ..Default::default()
+        };
+        second.handlers.insert(
+            "user_bash".into(),
+            vec![Arc::new(|_, _| {
+                Ok(Some(
+                    json!({"result": {"output": "second", "cancelled": false, "truncated": false}}),
+                ))
+            })],
+        );
+        let runner = runner_with(vec![first, second]);
+        assert_eq!(
+            runner.emit_user_bash(&event),
+            Ok(Some(
+                json!({"result": {"output": "second", "cancelled": false, "truncated": false}})
+            ))
+        );
+        assert_eq!(runner.emit_user_bash(&event), runner.emit_user_bash(&event));
     }
 
     #[test]

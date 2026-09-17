@@ -2,6 +2,17 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Extension slice L — user_bash fail-closed (uncommitted)
+
+Upstream #9068 (509ee2bd0): `emit_user_bash` fails closed —
+handler errors report + propagate, invalid defined results rejected
+with the upstream diagnostic, `None` propagates. Two pins green,
+TDD red-first. Extensions lib 74/74, extensions_parity 9/9, scoped
+rustfmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). Pre-existing clippy failures verified
+identical on clean HEAD. No row promoted; metrics unchanged. Next:
+commit + push, then continue the sweep.
+
 ### Resource slice M — symlink-root pin committed + pushed
 
 RES-006 symlink residual closed with a recursive-discovery pin
