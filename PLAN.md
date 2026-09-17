@@ -2,6 +2,17 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Provider slice F — Google transient retry
+
+Ported upstream #7471 (b9d360a2c): generative-ai initial request
+retries transient errors/statuses per maxRetries (Vertex-mirror
+loop). New 503→200 / 503-terminal loopback pin, TDD red-first.
+No row promoted (provider deterministic slice). Gate green: pi-ai
+lib 483/483, exhaustive 18/18, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+the pin-era sweep.
+
 ### Transcript leaf 4 — initial-message helpers
 
 Ported upstream `createInitialSystemMessage`/`normalizeContext`/

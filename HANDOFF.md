@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Provider slice F — Google transient retry (uncommitted)
+
+Upstream #7471 (b9d360a2c): generative-ai retries transient
+errors/statuses per maxRetries. New loopback pin green, TDD
+red-first. pi-ai lib 483/483, exhaustive 18/18, pi-ai strict
+clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
+unchanged. Next: commit + push, then continue the pin-era sweep.
+
 ### Transcript leaf 4 — initial-message helpers committed + pushed
 
 Upstream initial-message helpers (`createInitialSystemMessage` /
@@ -12,13 +21,7 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `c2d2593`, pushed, hashes match. Next: wave (b) adapter
 signatures (flag-day migration, queued with loop + persistence).
 
-Upstream initial-message helpers (`createInitialSystemMessage` /
-`normalizeContext` / initial/strip): fold/strip pin, no callers
-yet. pi-ai lib 483/483, pi-ai strict clippy clean, fmt clean,
-conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then wave (b) adapter signatures (flag-day,
-queued with loop + persistence).
+## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
 ### Transcript wave (a) — capability flags committed + pushed
 

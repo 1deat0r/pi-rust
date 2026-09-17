@@ -27,6 +27,8 @@ use super::openai_completions::{
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
+const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
+
 /// Options for Google requests (subset of upstream `GoogleOptions`).
 #[derive(Clone)]
 pub struct GoogleOptions {
@@ -790,29 +792,112 @@ pub fn stream(
             options.base.base.headers.as_ref(),
             api_key.as_deref(),
         );
-        let mut request = client
-            .post(&endpoint)
-            .header("content-type", "application/json")
-            .json(&params);
-        for (name, value) in headers {
-            if let Some(value) = value {
-                request = request.header(name.as_str(), value.as_str());
-            }
-        }
 
-        let response = match abortable(request.send(), options.base.abort_signal.clone()).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(err)) => {
-                let message =
-                    terminal_error_message(&model, format!("Request failed: {err}"), false);
-                pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
-                    error_message: message.clone(),
-                });
-                pusher.end(Some(message));
-                return;
+        // Upstream #7471: wrap the initial request in the shared retry
+        // policy (opt-in via maxRetries) so transient 408/409/429/5xx
+        // errors retry instead of ending the turn. Mirrors the Vertex
+        // `send_google_request` loop; reqwest surfaces retryable
+        // statuses as responses, not errors.
+        let max_retries = options.base.base.max_retries.unwrap_or(0);
+        let max_retry_delay_ms = options.base.base.max_retry_delay_ms;
+        let mut retry_index = 0;
+        let response = loop {
+            let mut request = client
+                .post(&endpoint)
+                .header("content-type", "application/json")
+                .json(&params);
+            for (name, value) in &headers {
+                if let Some(value) = value {
+                    request = request.header(name.as_str(), value.as_str());
+                }
             }
-            Err(_) => {
+
+            let response = match abortable(request.send(), options.base.abort_signal.clone()).await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(err)) => {
+                    if retry_index >= max_retries {
+                        let message =
+                            terminal_error_message(&model, format!("Request failed: {err}"), false);
+                        pusher.push(AssistantMessageEvent::Error {
+                            reason: ErrorReason::Error,
+                            error_message: message.clone(),
+                        });
+                        pusher.end(Some(message));
+                        return;
+                    }
+                    let delay = super::openai_completions::exponential_retry_delay(retry_index);
+                    if abortable(
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)),
+                        options.base.abort_signal.clone(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        let message = terminal_error_message(&model, "Request was aborted", true);
+                        pusher.push(AssistantMessageEvent::Error {
+                            reason: ErrorReason::Aborted,
+                            error_message: message.clone(),
+                        });
+                        pusher.end(Some(message));
+                        return;
+                    }
+                    retry_index += 1;
+                    continue;
+                }
+                Err(_) => {
+                    let message = terminal_error_message(&model, "Request was aborted", true);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
+            };
+            let status = response.status().as_u16();
+            let should_retry = super::openai_completions::retryable_provider_status(
+                status,
+                response
+                    .headers()
+                    .get("x-should-retry")
+                    .and_then(|value| value.to_str().ok()),
+            );
+            if retry_index >= max_retries || !should_retry {
+                break response;
+            }
+            let delay = match super::openai_completions::retry_after_delay_ms(response.headers()) {
+                Some(delay) => {
+                    let max_delay = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
+                    if max_delay > 0 && delay > max_delay {
+                        let message = terminal_error_message(
+                            &model,
+                            format!(
+                                "Server requested {}s retry delay (max: {}s).",
+                                delay.div_ceil(1000),
+                                max_delay.div_ceil(1000)
+                            ),
+                            false,
+                        );
+                        pusher.push(AssistantMessageEvent::Error {
+                            reason: ErrorReason::Error,
+                            error_message: message.clone(),
+                        });
+                        pusher.end(Some(message));
+                        return;
+                    }
+                    delay
+                }
+                None => super::openai_completions::exponential_retry_delay(retry_index),
+            };
+            drop(response);
+            if abortable(
+                tokio::time::sleep(std::time::Duration::from_millis(delay)),
+                options.base.abort_signal.clone(),
+            )
+            .await
+            .is_err()
+            {
                 let message = terminal_error_message(&model, "Request was aborted", true);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Aborted,
@@ -821,6 +906,7 @@ pub fn stream(
                 pusher.end(Some(message));
                 return;
             }
+            retry_index += 1;
         };
         let status = response.status();
         let provider_response = crate::types::ProviderResponse {

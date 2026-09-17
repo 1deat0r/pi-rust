@@ -1305,6 +1305,58 @@ async fn responses_http_errors_identify_the_model_provider_upstream_9298() {
 }
 
 #[tokio::test]
+async fn google_generative_ai_retries_transient_errors_upstream_7471() {
+    // Upstream #7471: the Google adapters wrap the initial request in
+    // the shared retry policy (opt-in via maxRetries). A 503 followed
+    // by a 200 succeeds with two requests; without retries the 503 is
+    // terminal with one request.
+    let success = simple_text_reply("google-generative-ai");
+    let transient = Reply::text(
+        503,
+        "application/json",
+        br#"{"error":{"message":"service overloaded"}}"#.to_vec(),
+    );
+    let (base_url, requests, server) = start_server(vec![transient, success]).await;
+    let mut options = request_options("retry-key");
+    options.base.max_retries = Some(1);
+    let model = local_model("google", "google-generative-ai", &base_url);
+    let stream = google_generative_ai::stream(
+        &model,
+        &Context::default(),
+        reqwest::Client::new(),
+        &base_url,
+        Some("retry-key"),
+        &google_generative_ai::GoogleOptions::from_stream_options(options),
+    );
+    let (_, message) = stream.collect().await;
+    server.abort();
+    let _ = server.await;
+    assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+    assert_eq!(requests.lock().unwrap().len(), 2);
+
+    let (base_url, requests, server) = start_server(vec![Reply::text(
+        503,
+        "application/json",
+        br#"{"error":{"message":"service overloaded"}}"#.to_vec(),
+    )])
+    .await;
+    let model = local_model("google", "google-generative-ai", &base_url);
+    let stream = google_generative_ai::stream(
+        &model,
+        &Context::default(),
+        reqwest::Client::new(),
+        &base_url,
+        Some("retry-key"),
+        &google_generative_ai::GoogleOptions::from_stream_options(request_options("retry-key")),
+    );
+    let (_, message) = stream.collect().await;
+    server.abort();
+    let _ = server.await;
+    assert_eq!(message.stop_reason(), Some(StopReason::Error));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn retry_timeout_and_abort_paths_are_exercised_where_supported() {
     let mut attempts = 0_u32;
     let policy = pi_ai::utils::RetryPolicy {
