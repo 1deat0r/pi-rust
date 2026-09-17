@@ -12,7 +12,7 @@ use crate::core::extensions::types::{
     ExtensionHostActions, ExtensionRuntime, ExtensionShortcut, ExtensionUiContext, HandlerFn,
     MarkdownTransformContext, MarkdownTransformer, MessageRenderer, RegisteredTool,
     ResolvedCommand, SourceInfo, ToolExecutionRequest, ToolRenderCallRequest, ToolRenderContext,
-    ToolRenderResultOptions, ToolRenderResultRequest, ToolUpdateFn,
+    ToolRenderResultOptions, ToolRenderResultRequest, ToolUpdateFn, UiPromptEmitter,
 };
 
 pub use crate::core::extensions::types::InputEventResult;
@@ -240,13 +240,31 @@ impl ExtensionRunner {
                 )
             })
             .unwrap_or_else(|_| (ExtensionUiContext::default(), Default::default()));
-        ExtensionContext {
+        let mut context = ExtensionContext {
             mode: self.mode.clone(),
             cwd: self.cwd.clone(),
             has_ui: self.has_ui,
             ui,
             host,
+        };
+        // Upstream #8355: blocking UI prompts notify ui_prompt_start /
+        // ui_prompt_end handlers. Snapshot the subscribed handlers and an
+        // Arc context here; dialog calls later dispatch through them.
+        let handlers: Vec<HandlerFn> = ["ui_prompt_start", "ui_prompt_end"]
+            .iter()
+            .flat_map(|event| {
+                self.extensions
+                    .iter()
+                    .filter_map(|extension| extension.handlers.get(*event))
+                    .flatten()
+                    .cloned()
+            })
+            .collect();
+        if !handlers.is_empty() {
+            let emitter = UiPromptEmitter::new(Arc::new(context.clone()), handlers);
+            context.ui.set_ui_prompt_emitter(emitter);
         }
+        context
     }
 
     fn active_error(&self, event: &str) -> Option<ExtensionError> {
@@ -1914,5 +1932,34 @@ mod tests {
             *observed.lock().unwrap_or_else(|error| error.into_inner()),
             Some(payload)
         );
+    }
+
+    #[test]
+    fn handler_contexts_install_ui_prompt_emitters_when_subscribed_upstream_8355() {
+        // Upstream #8355: contexts built while ui_prompt handlers are
+        // subscribed carry an emitter; without subscriptions there is
+        // none (zero overhead, no behavior change).
+        use crate::core::extensions::types::UiPromptKind;
+        let mut subscribed = Extension {
+            path: "ui-listener.js".into(),
+            ..Default::default()
+        };
+        subscribed
+            .handlers
+            .insert("ui_prompt_start".into(), vec![Arc::new(|_, _| Ok(None))]);
+        let runner = runner_with(vec![subscribed]);
+        let context = runner.create_context_with_ui(true);
+        assert!(context.ui.has_ui_prompt_emitter());
+        // End-to-end through the installed emitter: outermost wait
+        // emits start, nested waits stay silent.
+        let emitter = context.ui.ui_prompt_emitter().expect("emitter installed");
+        assert!(emitter.enter(UiPromptKind::Confirm, Some("Sure?")));
+        assert!(!emitter.enter(UiPromptKind::Input, None));
+        emitter.exit();
+        emitter.exit();
+
+        let plain = runner_with(vec![]);
+        let bare = plain.create_context_with_ui(true);
+        assert!(!bare.ui.has_ui_prompt_emitter());
     }
 }

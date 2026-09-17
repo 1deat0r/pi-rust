@@ -1713,6 +1713,121 @@ pub struct ExtensionUiContext {
     enabled: bool,
     blocking_allowed: bool,
     active: Option<Arc<AtomicBool>>,
+    ui_prompt_emitter: Option<UiPromptEmitter>,
+}
+
+/// UI prompt kinds for `ui_prompt_start`/`ui_prompt_end` events
+/// (upstream `UIPromptKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPromptKind {
+    Select,
+    Confirm,
+    Input,
+    Editor,
+    Custom,
+}
+
+impl UiPromptKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UiPromptKind::Select => "select",
+            UiPromptKind::Confirm => "confirm",
+            UiPromptKind::Input => "input",
+            UiPromptKind::Editor => "editor",
+            UiPromptKind::Custom => "custom",
+        }
+    }
+}
+
+/// Emits `ui_prompt_start`/`ui_prompt_end` around blocking extension UI
+/// prompts (upstream #8355). Only the outermost prompt in a nesting
+/// chain emits, so handlers observe one start/end pair per user-visible
+/// wait. Handler failures are isolated and never delay or break the
+/// prompt itself.
+#[derive(Clone)]
+pub struct UiPromptEmitter {
+    depth: Arc<Mutex<usize>>,
+    active: Arc<Mutex<Option<(String, Option<String>)>>>,
+    // Arc breaks the Context -> UiContext -> Emitter -> Context cycle.
+    context: Arc<ExtensionContext>,
+    handlers: Arc<Vec<HandlerFn>>,
+}
+
+impl std::fmt::Debug for UiPromptEmitter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UiPromptEmitter")
+            .field("handler_count", &self.handlers.len())
+            .finish()
+    }
+}
+
+impl UiPromptEmitter {
+    pub fn new(context: Arc<ExtensionContext>, handlers: Vec<HandlerFn>) -> Self {
+        Self {
+            depth: Arc::new(Mutex::new(0)),
+            active: Arc::new(Mutex::new(None)),
+            context,
+            handlers: Arc::new(handlers),
+        }
+    }
+
+    fn payload(event_type: &str, kind: &str, title: Option<&str>) -> Value {
+        let mut payload = serde_json::Map::new();
+        payload.insert("type".to_string(), Value::String(event_type.to_string()));
+        payload.insert("reason".to_string(), Value::String("ui_prompt".to_string()));
+        payload.insert("kind".to_string(), Value::String(kind.to_string()));
+        if let Some(title) = title {
+            payload.insert("title".to_string(), Value::String(title.to_string()));
+        }
+        Value::Object(payload)
+    }
+
+    fn dispatch(&self, payload: &Value) {
+        for handler in self.handlers.iter() {
+            // Isolated like every other runner dispatch: panics caught,
+            // errors dropped — handlers must not delay the prompt.
+            let _ = catch_unwind(AssertUnwindSafe(|| handler(&self.context, payload)));
+        }
+    }
+
+    /// Enter a prompt; returns true when this is the outermost wait.
+    pub fn enter(&self, kind: UiPromptKind, title: Option<&str>) -> bool {
+        let mut depth = self.depth.lock().unwrap_or_else(|error| error.into_inner());
+        *depth += 1;
+        if *depth == 1 {
+            *self
+                .active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some((
+                kind.as_str().to_string(),
+                title.map(|title| title.to_string()),
+            ));
+            self.dispatch(&Self::payload("ui_prompt_start", kind.as_str(), title));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Leave a prompt; emits the end event when the outermost wait ends.
+    pub fn exit(&self) {
+        let mut depth = self.depth.lock().unwrap_or_else(|error| error.into_inner());
+        if *depth == 0 {
+            return;
+        }
+        *depth -= 1;
+        if *depth > 0 {
+            return;
+        }
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let (kind, title) = active.unwrap_or_else(|| ("custom".to_string(), None));
+        self.dispatch(&Self::payload("ui_prompt_end", &kind, title.as_deref()));
+    }
 }
 
 impl std::fmt::Debug for ExtensionUiContext {
@@ -1749,7 +1864,53 @@ impl ExtensionUiContext {
             enabled,
             blocking_allowed,
             active,
+            ui_prompt_emitter: None,
         }
+    }
+
+    /// Install the UI prompt event emitter (upstream #8355 wrapper).
+    /// Called by the runner when building handler contexts so blocking
+    /// prompts notify `ui_prompt_start`/`ui_prompt_end` handlers.
+    pub fn set_ui_prompt_emitter(&mut self, emitter: UiPromptEmitter) {
+        self.ui_prompt_emitter = Some(emitter);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_ui_prompt_emitter(&self) -> bool {
+        self.ui_prompt_emitter.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ui_prompt_emitter(&self) -> Option<UiPromptEmitter> {
+        self.ui_prompt_emitter.clone()
+    }
+
+    /// Run a blocking dialog bracketed by UI prompt events. Only the
+    /// outermost wait emits; handler failures never break the prompt.
+    /// A panic guard keeps the nesting depth accurate on unwind,
+    /// mirroring upstream's try/finally.
+    fn with_ui_prompt<R>(
+        &self,
+        kind: UiPromptKind,
+        title: Option<&str>,
+        run: impl FnOnce() -> R,
+    ) -> R {
+        struct ExitGuard {
+            emitter: UiPromptEmitter,
+        }
+        impl Drop for ExitGuard {
+            fn drop(&mut self) {
+                self.emitter.exit();
+            }
+        }
+        let Some(emitter) = &self.ui_prompt_emitter else {
+            return run();
+        };
+        emitter.enter(kind, title);
+        let _guard = ExitGuard {
+            emitter: emitter.clone(),
+        };
+        run()
     }
 
     pub fn broker(&self) -> ExtensionUiBroker {
@@ -1800,12 +1961,13 @@ impl ExtensionUiContext {
         options_config: ExtensionUiDialogOptions,
     ) -> Result<Option<String>, String> {
         self.ensure_active()?;
-        self.broker.select(
-            title,
-            options,
-            options_config,
-            self.enabled && self.blocking_allowed,
-        )
+        let blocking = self.enabled && self.blocking_allowed;
+        let title = title.to_string();
+        let options = options.to_vec();
+        self.with_ui_prompt(UiPromptKind::Select, Some(&title), || {
+            self.broker
+                .select(&title, &options, options_config, blocking)
+        })
     }
 
     pub fn confirm(
@@ -1831,12 +1993,13 @@ impl ExtensionUiContext {
         options_config: ExtensionUiDialogOptions,
     ) -> Result<bool, String> {
         self.ensure_active()?;
-        self.broker.confirm(
-            title,
-            message,
-            options_config,
-            self.enabled && self.blocking_allowed,
-        )
+        let blocking = self.enabled && self.blocking_allowed;
+        let title = title.to_string();
+        let message = message.to_string();
+        self.with_ui_prompt(UiPromptKind::Confirm, Some(&title), || {
+            self.broker
+                .confirm(&title, &message, options_config, blocking)
+        })
     }
 
     pub fn input(
@@ -1862,12 +2025,13 @@ impl ExtensionUiContext {
         options_config: ExtensionUiDialogOptions,
     ) -> Result<Option<String>, String> {
         self.ensure_active()?;
-        self.broker.input(
-            title,
-            placeholder,
-            options_config,
-            self.enabled && self.blocking_allowed,
-        )
+        let blocking = self.enabled && self.blocking_allowed;
+        let title = title.to_string();
+        let placeholder = placeholder.map(|placeholder| placeholder.to_string());
+        self.with_ui_prompt(UiPromptKind::Input, Some(&title), || {
+            self.broker
+                .input(&title, placeholder.as_deref(), options_config, blocking)
+        })
     }
 
     pub fn editor(&self, title: &str, prefill: Option<&str>) -> Result<Option<String>, String> {
@@ -1881,12 +2045,13 @@ impl ExtensionUiContext {
         options_config: ExtensionUiDialogOptions,
     ) -> Result<Option<String>, String> {
         self.ensure_active()?;
-        self.broker.editor(
-            title,
-            prefill,
-            options_config,
-            self.enabled && self.blocking_allowed,
-        )
+        let blocking = self.enabled && self.blocking_allowed;
+        let title = title.to_string();
+        let prefill = prefill.map(|prefill| prefill.to_string());
+        self.with_ui_prompt(UiPromptKind::Editor, Some(&title), || {
+            self.broker
+                .editor(&title, prefill.as_deref(), options_config, blocking)
+        })
     }
 
     pub fn custom(
@@ -1904,12 +2069,11 @@ impl ExtensionUiContext {
         options_config: ExtensionUiDialogOptions,
     ) -> Result<Option<Value>, String> {
         self.ensure_active()?;
-        self.broker.custom(
-            factory,
-            options,
-            options_config,
-            self.enabled && self.blocking_allowed,
-        )
+        let blocking = self.enabled && self.blocking_allowed;
+        self.with_ui_prompt(UiPromptKind::Custom, None, || {
+            self.broker
+                .custom(factory, options, options_config, blocking)
+        })
     }
 
     pub fn notify(&self, message: &str, notify_type: Option<&str>) -> Result<(), String> {
@@ -4080,6 +4244,112 @@ mod tests {
 
     fn worker_ui_context(broker: &ExtensionUiBroker) -> ExtensionUiContext {
         ExtensionUiContext::new(broker.clone(), true, true)
+    }
+
+    fn recording_emitter(
+        context: ExtensionContext,
+        events: &Arc<Mutex<Vec<Value>>>,
+    ) -> UiPromptEmitter {
+        let events = Arc::clone(events);
+        UiPromptEmitter::new(
+            Arc::new(context),
+            vec![Arc::new(move |_, payload: &Value| {
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(payload.clone());
+                Ok(None)
+            })],
+        )
+    }
+
+    fn test_context() -> ExtensionContext {
+        ExtensionContext {
+            mode: "test".to_string(),
+            cwd: "/tmp".to_string(),
+            has_ui: true,
+            ui: ExtensionUiContext::default(),
+            host: ExtensionHostContext::default(),
+        }
+    }
+
+    #[test]
+    fn ui_prompt_emitter_brackets_outermost_wait_only_upstream_8355() {
+        // Upstream #8355: blocking prompts notify ui_prompt_start/end;
+        // only the outermost wait in a nesting chain emits, with the
+        // outer kind/title on the end event.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let emitter = recording_emitter(test_context(), &events);
+        assert!(emitter.enter(UiPromptKind::Select, Some("Pick one")));
+        assert!(!emitter.enter(UiPromptKind::Confirm, Some("Sure?")));
+        emitter.exit();
+        {
+            let guarded = events.lock().unwrap_or_else(|error| error.into_inner());
+            assert_eq!(guarded.len(), 1, "nested enter must not emit");
+            assert_eq!(guarded[0]["type"], "ui_prompt_start");
+        }
+        emitter.exit();
+        let guarded = events.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(guarded.len(), 2);
+        assert_eq!(guarded[0]["type"], "ui_prompt_start");
+        assert_eq!(guarded[0]["reason"], "ui_prompt");
+        assert_eq!(guarded[0]["kind"], "select");
+        assert_eq!(guarded[0]["title"], "Pick one");
+        assert_eq!(guarded[1]["type"], "ui_prompt_end");
+        assert_eq!(guarded[1]["kind"], "select");
+        assert_eq!(guarded[1]["title"], "Pick one");
+    }
+
+    #[test]
+    fn ui_prompt_handler_failures_never_break_the_prompt() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut emitter = recording_emitter(test_context(), &events);
+        emitter.handlers = Arc::new(vec![Arc::new(|_, _| Err("boom".to_string()))]);
+        assert!(emitter.enter(UiPromptKind::Input, None));
+        emitter.exit();
+        assert_eq!(
+            events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn ui_prompt_dialogs_emit_around_broker_calls() {
+        // End-to-end through a real broker dialog: start fires before
+        // the request resolves, end after, prompt result unaffected.
+        let broker = ExtensionUiBroker::new();
+        let mut ui = worker_ui_context(&broker);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        ui.set_ui_prompt_emitter(recording_emitter(test_context(), &events));
+        let worker = thread::spawn(move || {
+            ui.select("Choose", &["a".to_string()], Some(Duration::from_secs(5)))
+        });
+        let request = next_ui_request(&broker);
+        {
+            let guarded = events.lock().unwrap_or_else(|error| error.into_inner());
+            assert_eq!(guarded.len(), 1);
+            assert_eq!(guarded[0]["type"], "ui_prompt_start");
+            assert_eq!(guarded[0]["kind"], "select");
+        }
+        let id = request_id(&request);
+        assert_eq!(
+            broker.handle_response(&serde_json::json!({
+                "type": "extension_ui_response",
+                "id": id,
+                "result": "a"
+            })),
+            ExtensionUiResponseDisposition::Resolved
+        );
+        assert_eq!(
+            worker.join().expect("select worker"),
+            Ok(Some("a".to_string()))
+        );
+        let guarded = events.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(guarded.len(), 2);
+        assert_eq!(guarded[1]["type"], "ui_prompt_end");
     }
 
     #[test]

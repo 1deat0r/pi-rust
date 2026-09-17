@@ -2,6 +2,23 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Extension slice K: UI prompt events (last updated 2026-09-17)
+
+Slice K (pin era, upstream #8355 fixed by ccfe79ed2): blocking
+extension UI prompts emit `ui_prompt_start`/`ui_prompt_end` to
+subscribed handlers. New `UiPromptEmitter` (nesting-aware:
+outermost wait only, outer kind/title on end; handler failures
+isolated via catch, Drop guard keeps depth accurate) installed by
+the runner when building handler contexts; all 5 dialog methods
+wrapped. Four pins (bracketing, failure isolation, broker
+end-to-end, runner installation). Gate: extensions 72/72, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). Pre-existing failures unchanged on clean
+HEAD. No parity row promoted (extension deterministic slice).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Tool slice J: PowerShell tool (last updated 2026-09-17)
 
 Slice J (pin era, upstream #8512 fixed by 80e62761f): optional

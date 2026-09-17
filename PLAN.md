@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Extension slice K — UI prompt events
+
+Ported upstream #8355 (ccfe79ed2): nesting-aware prompt emitter
+installed on handler contexts; 5 dialogs wrapped; failures
+isolated. Four pins. No row promoted (extension slice). Gate
+green: extensions 72/72, fmt, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0, 58/318). Next: commit +
+push, then continue the sweep.
+
 ### Tool slice J — PowerShell tool
 
 Ported upstream #8512 (80e62761f): optional powershell tool with
