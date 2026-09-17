@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Maintenance — stale catalog pins (uncommitted)
+### Maintenance — stale catalog pins committed + pushed
+
+Repaired nvidia id list + copilot filter fixture to vendored data
+(both red on clean HEAD). Catalog 14/14, copilot 5/5, pi-ai lib
+483/483 green, pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
+No row promoted; metrics unchanged. Committed `5e3ef43`, pushed,
+hashes match. Next: continue the sweep or wave (b) migration.
 
 Repaired nvidia id list + copilot filter fixture to vendored data
 (both red on clean HEAD). Catalog 14/14, copilot 5/5, pi-ai lib
