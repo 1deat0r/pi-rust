@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice S — skill prompt-inclusion evidence (uncommitted)
+### CLI slice S — skill prompt-inclusion evidence committed + pushed
+
+CLI-032 prompt-inclusion residual closed with a usage process pin
+(no source change; row note extended, held). Resources 10/10, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `5dc4ff4`, pushed, hashes match. Next: continue phase 1.
 
 CLI-032 prompt-inclusion residual closed with a usage process pin
 (no source change; row note extended, held). Resources 10/10, fmt
