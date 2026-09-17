@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### ENV slice V: cache TTL breadth (last updated 2026-09-17)
+
+Slice V (ENV-011 residual): anthropic-lane unit pin for retention
+modes (long→1h TTL, none→absent, short→bare marker,
+unsupported→bare marker), closing cross-provider wire breadth. No
+source change needed; row note extended, statuses held. Gate:
+pi-ai lib 484/484, fmt clean, conversion 100.00% (166/166), parity
+register + dashboard OK (upstream=d7296c0). No parity row promoted
+(live/platform breadth open). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
+overall 58/266, whole-product 58/318).
+
 ### CLI slice U: unknown-pattern evidence (last updated 2026-09-17)
 
 Slice U (CLI-036 residual): real-process pin proving an unmatched

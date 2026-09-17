@@ -2293,4 +2293,28 @@ mod tests {
         assert!(compat.supports_mid_convo_system_messages);
         assert!(compat.supports_mid_convo_tool_changes);
     }
+
+    #[test]
+    fn cache_control_ttl_follows_retention_env_011() {
+        // ENV-011 cross-provider breadth: `long` retention sends the
+        // 1h TTL marker (when supported), `none` sends nothing, and
+        // short sends the bare ephemeral marker.
+        let m = model("claude-opus-5", "anthropic");
+        assert_eq!(
+            cache_control_for_model(&m, "long"),
+            Some(serde_json::json!({"type": "ephemeral", "ttl": "1h"}))
+        );
+        assert_eq!(
+            cache_control_for_model(&m, "short"),
+            Some(serde_json::json!({"type": "ephemeral"}))
+        );
+        assert_eq!(cache_control_for_model(&m, "none"), None);
+
+        let mut unsupported = model("claude-opus-5", "anthropic");
+        unsupported.compat = Some(serde_json::json!({"supportsLongCacheRetention": false}));
+        assert_eq!(
+            cache_control_for_model(&unsupported, "long"),
+            Some(serde_json::json!({"type": "ephemeral"}))
+        );
+    }
 }

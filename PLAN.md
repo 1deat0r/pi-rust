@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### ENV slice V — cache TTL breadth
+
+Closed the ENV-011 cross-provider residual with an anthropic TTL
+unit pin (no source change; row note extended, held). No row
+promoted (live breadth open). Gate green: pi-ai lib 484/484, fmt,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice U — unknown-pattern evidence
 
 Closed the CLI-036 unknown-pattern residual with a real-process

@@ -59,6 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### ENV slice V — cache TTL breadth (uncommitted)
+
+ENV-011 cross-provider residual closed with an anthropic TTL unit
+pin (no source change; row note extended, held). pi-ai lib
+484/484, fmt clean, conversion 100.00% (166/166), parity register
++ dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Next: commit + push, then continue phase 1.
+
 ### CLI slice U — unknown-pattern evidence committed + pushed
 
 CLI-036 unknown-pattern residual closed with a real-process pin
@@ -67,11 +75,7 @@ clean, conversion 100.00% (166/166), parity register + dashboard
 OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
 Committed `e3b02c0`, pushed, hashes match. Next: continue phase 1.
 
-CLI-036 unknown-pattern residual closed with a real-process pin
-(no source change; row note extended, held). List-models 4/4, fmt
-clean, conversion 100.00% (166/166), parity register + dashboard
-OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
-Next: commit + push, then continue phase 1.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### CLI slice T — template variable evidence committed + pushed
 
