@@ -11,7 +11,14 @@ pins green. Extensions 72/72, fmt clean, conversion 100.00%
 promoted; metrics unchanged. Committed `94140ee`, pushed, hashes
 match. Next: continue the sweep.
 
-### Session slice L — discovery symlink pin (uncommitted)
+### Session slice L — discovery symlink pin committed + pushed
+
+SES-007 symlink residual closed with a real-filesystem pin (no
+source change; row note extended, statuses held). jsonl_repo
+16/16, pi-agent lib 276/276, fmt clean, conversion 100.00%
+(166/166), parity register + dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`27d5cba`, pushed, hashes match. Next: continue the sweep.
 
 SES-007 symlink residual closed with a real-filesystem pin (no
 source change; row note extended, statuses held). jsonl_repo
