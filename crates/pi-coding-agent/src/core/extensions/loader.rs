@@ -77,6 +77,15 @@ impl<'a> ExtensionApi<'a> {
     pub fn register_tool(&mut self, tool: RegisteredTool) -> Result<(), String> {
         self.assert_active()?;
         let name = tool.name.clone();
+        // Upstream #9300: reject tools without an object parameter
+        // schema at registration instead of breaking provider request
+        // serialization later.
+        if !tool.parameters.is_object() {
+            return Err(format!(
+                "Tool \"{name}\" registered by extension \"{}\" must define an object parameter schema.",
+                self.extension.path
+            ));
+        }
         self.extension.tools.insert(name.clone(), tool);
         self.extension
             .record_registration(RegistrationKind::Tool, Some(name));
@@ -1109,6 +1118,45 @@ mod tests {
                 .expect("tool"),
             json!({"id": "call-1", "params": {"value": 7}})
         );
+    }
+
+    #[test]
+    fn register_tool_rejects_non_object_parameter_schemas_upstream_9300() {
+        // Upstream #9300: tools without an object parameter schema are
+        // rejected at registration instead of breaking provider request
+        // serialization later.
+        for parameters in [
+            json!(null),
+            json!("object"),
+            json!(["type", "object"]),
+            json!(42),
+        ] {
+            let result = load_extension_from_factory(
+                |api| {
+                    api.register_tool(RegisteredTool {
+                        name: "bad-tool".to_string(),
+                        label: "Bad tool".to_string(),
+                        description: "Missing schema".to_string(),
+                        parameters,
+                        source_info: SourceInfo::synthetic("<inline:rust>", "inline", None),
+                        ..Default::default()
+                    })?;
+                    Ok(())
+                },
+                "/fixture/project",
+                create_extension_runtime(),
+                "<inline:bad-tool>",
+            );
+            let error = result.expect_err("non-object schema must be rejected");
+            assert!(
+                error.error.contains(
+                    "Tool \"bad-tool\" registered by extension \"<inline:bad-tool>\" \
+                     must define an object parameter schema."
+                ),
+                "unexpected error: {}",
+                error.error
+            );
+        }
     }
 
     #[test]

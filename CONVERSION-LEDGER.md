@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Extension slice I: tool schema validation (last updated 2026-09-17)
+
+Slice I (pin era, upstream #9300 fixed by acaa253cc): native
+`register_tool` rejects non-object parameter schemas
+(null/string/array/number) at registration with the upstream
+diagnostic, instead of breaking provider request serialization
+later. New 4-shape rejection pin. Gate: loader 16/16, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). Pre-existing failures unchanged on clean HEAD.
+No parity row promoted (extension deterministic slice). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Resolver slice H: Radius default (last updated 2026-09-17)
 
 Slice H (pin era, upstream 9767ba275): Radius default `auto` →

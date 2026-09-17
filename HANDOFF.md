@@ -2,6 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Extension slice I — tool schema validation (uncommitted)
+
+Upstream #9300 (acaa253cc): `register_tool` rejects non-object
+schemas at registration. New 4-shape pin green. Loader 16/16,
+fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue the sweep.
+
 ### Resolver slice H — Radius default committed + pushed
 
 Upstream 9767ba275: Radius default `balanced` (fallback existed;
@@ -10,11 +18,7 @@ clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
 upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `feb0d07`, pushed, hashes match. Next: continue the sweep.
 
-Upstream 9767ba275: Radius default `balanced` (fallback existed;
-no post-login flow to defer). Pin updated. Scoped 41/41, fmt
-clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then continue the sweep.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Maintenance — stale catalog pins committed + pushed
 
