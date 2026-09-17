@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice T: template variable evidence (last updated 2026-09-17)
+
+Slice T (CLI-033 residual): real-process pin proving `$1`/`$2`
+positional variables interpolate into the persisted session with
+no raw variables left. No source change needed; row note
+extended, statuses held. Gate: resources suite 11/11, fmt clean,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0). No parity row promoted (precedence/encoding
+breadth open). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### CLI slice S: skill prompt-inclusion evidence (last updated 2026-09-17)
 
 Slice S (CLI-032 residual): real-process pin proving an explicit

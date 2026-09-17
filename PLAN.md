@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### CLI slice T — template variable evidence
+
+Closed the CLI-033 variable residual with a real-process pin (no
+source change; row note extended, held). No row promoted
+(precedence breadth open). Gate green: resources 11/11, fmt,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice S — skill prompt-inclusion evidence
 
 Closed the CLI-032 prompt-inclusion residual with a usage process

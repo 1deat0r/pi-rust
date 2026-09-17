@@ -421,3 +421,40 @@ fn explicit_skill_reaches_provider_payload_cli_032() {
         "explicit skill must reach the payload: without={without} with={with}"
     );
 }
+
+#[test]
+fn prompt_template_positional_variables_expand_in_run_path_cli_033() {
+    // CLI-033 residual: template `$1` positional variables interpolate
+    // process-wide, with the expanded text (not the literal) reaching
+    // the persisted session.
+    let sandbox = Sandbox::new("template-vars");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(cwd.join(".pi").join("prompts")).unwrap();
+    fs::write(
+        cwd.join(".pi").join("prompts").join("greet.md"),
+        "---\ndescription: Greet\n---\nHello, $1! Welcome to $2.",
+    )
+    .unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/greet Ada Wonderland",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = sandbox.session_content();
+    assert!(
+        session.contains("Hello, Ada! Welcome to Wonderland."),
+        "expected interpolated template in session, got:\n{session}"
+    );
+    assert!(
+        !session.contains("$1") && !session.contains("$2"),
+        "no raw variables should persist"
+    );
+}
