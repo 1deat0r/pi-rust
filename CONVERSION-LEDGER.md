@@ -2,6 +2,23 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Tool slice J: PowerShell tool (last updated 2026-09-17)
+
+Slice J (pin era, upstream #8512 fixed by 80e62761f): optional
+PowerShell tool reusing the bash execution machinery — pwsh/
+powershell discovery (Windows-only), `POWERSHELL_ARGS`, UTF-8
+output prefix. Required a `shell_args` seam in `StdExecutionEnv`
+(replacing `-c`) plus a shell-args executor variant (existing
+signatures untouched). Tool stays out of the default set. Three
+pins (args, platform gate, prefix). Gate: pi-agent lib 276/276,
+fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). Pre-existing pi-agent clippy module-inception
+unchanged on clean HEAD. No parity row promoted (tool
+deterministic slice; Windows execution unverifiable offline).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Extension slice I: tool schema validation (last updated 2026-09-17)
 
 Slice I (pin era, upstream #9300 fixed by acaa253cc): native

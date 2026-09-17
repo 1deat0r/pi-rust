@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Tool slice J — PowerShell tool (uncommitted)
+
+Upstream #8512 (80e62761f): optional powershell tool (discovery +
+args + UTF8 prefix; shell_args seam; default set untouched).
+Three pins green. pi-agent lib 276/276, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
+No row promoted; metrics unchanged. Next: commit + push, then
+continue the sweep.
+
 ### Extension slice I — tool schema validation committed + pushed
 
 Upstream #9300 (acaa253cc): `register_tool` rejects non-object
@@ -11,11 +20,7 @@ fmt clean, conversion 100.00% (166/166), parity dashboard OK
 Committed `49e7442`, pushed, hashes match. Next: continue the
 sweep.
 
-Upstream #9300 (acaa253cc): `register_tool` rejects non-object
-schemas at registration. New 4-shape pin green. Loader 16/16,
-fmt clean, conversion 100.00% (166/166), parity dashboard OK
-(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
-Next: commit + push, then continue the sweep.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Resolver slice H — Radius default committed + pushed
 

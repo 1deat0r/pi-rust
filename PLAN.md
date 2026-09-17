@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Tool slice J — PowerShell tool
+
+Ported upstream #8512 (80e62761f): optional powershell tool with
+discovery + args + UTF8 prefix (shell_args seam, default set
+untouched). Three pins. No row promoted (tool slice; Windows
+execution offline-unverifiable). Gate green: pi-agent lib 276/276,
+fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+the sweep.
+
 ### Extension slice I — tool schema validation
 
 Ported upstream #9300 (acaa253cc): `register_tool` rejects

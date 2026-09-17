@@ -7,6 +7,7 @@ pub mod edit;
 pub mod edit_diff;
 pub mod image;
 pub mod path_utils;
+pub mod powershell;
 pub mod read;
 pub mod truncate;
 pub mod validation;

@@ -645,6 +645,7 @@ fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionErro
 pub struct StdExecutionEnv {
     cwd: String,
     shell_path: Option<String>,
+    shell_args: Vec<String>,
     shell_env: Option<BTreeMap<String, String>>,
     active_child_pids: Arc<Mutex<HashSet<u32>>>,
 }
@@ -654,6 +655,7 @@ impl StdExecutionEnv {
         Self {
             cwd: cwd.into(),
             shell_path: None,
+            shell_args: Vec::new(),
             shell_env: None,
             active_child_pids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -663,6 +665,24 @@ impl StdExecutionEnv {
         Self {
             cwd: cwd.into(),
             shell_path: Some(shell_path.into()),
+            shell_args: Vec::new(),
+            shell_env: None,
+            active_child_pids: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Custom shell binary plus its invocation args, replacing the
+    /// default `-c`. Used by the PowerShell tool (`-NoProfile
+    /// -NonInteractive -ExecutionPolicy Bypass -Command`).
+    pub fn with_shell_and_args(
+        cwd: impl Into<String>,
+        shell_path: impl Into<String>,
+        shell_args: Vec<String>,
+    ) -> Self {
+        Self {
+            cwd: cwd.into(),
+            shell_path: Some(shell_path.into()),
+            shell_args,
             shell_env: None,
             active_child_pids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -672,6 +692,7 @@ impl StdExecutionEnv {
         Self {
             cwd: cwd.into(),
             shell_path: None,
+            shell_args: Vec::new(),
             shell_env: Some(shell_env),
             active_child_pids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -1161,10 +1182,15 @@ impl Shell for StdExecutionEnv {
 
         let mut child = {
             let mut cmd = tokio::process::Command::new(&shell);
-            cmd.arg("-c")
-                .arg(command)
-                .current_dir(&cwd)
-                .stdin(std::process::Stdio::null());
+            if self.shell_args.is_empty() {
+                cmd.arg("-c").arg(command);
+            } else {
+                for arg in &self.shell_args {
+                    cmd.arg(arg);
+                }
+                cmd.arg(command);
+            }
+            cmd.current_dir(&cwd).stdin(std::process::Stdio::null());
             cmd.stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             if !options.inherit_env {

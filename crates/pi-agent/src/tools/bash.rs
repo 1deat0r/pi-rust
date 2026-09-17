@@ -239,6 +239,29 @@ pub async fn execute_bash_with_updates_and_shell(
     on_update: Option<ToolUpdateCallback>,
     shell_path: Option<&str>,
 ) -> Result<AgentToolResult, String> {
+    execute_bash_with_updates_and_shell_args(
+        command,
+        timeout,
+        cwd,
+        abort,
+        on_update,
+        shell_path,
+        &[],
+    )
+    .await
+}
+
+/// `execute_bash_with_updates_and_shell` with explicit shell invocation
+/// args replacing the default `-c` (upstream PowerShell tool args).
+pub async fn execute_bash_with_updates_and_shell_args(
+    command: &str,
+    timeout: Option<f64>,
+    cwd: &str,
+    abort: Option<Arc<AtomicBool>>,
+    on_update: Option<ToolUpdateCallback>,
+    shell_path: Option<&str>,
+    shell_args: &[String],
+) -> Result<AgentToolResult, String> {
     validate_timeout(timeout)?;
 
     if let Some(on_update) = &on_update {
@@ -280,7 +303,11 @@ pub async fn execute_bash_with_updates_and_shell(
         ) as ChunkHandlerWithProgress
     });
     let env = match shell_path {
-        Some(path) => StdExecutionEnv::with_shell_path(cwd.to_string(), path.to_string()),
+        Some(path) => StdExecutionEnv::with_shell_and_args(
+            cwd.to_string(),
+            path.to_string(),
+            shell_args.to_vec(),
+        ),
         None => StdExecutionEnv::new(cwd.to_string()),
     };
     let capture = execute_shell_with_capture(
