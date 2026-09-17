@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice H — Azure peak-load retry
+
+Ported upstream #9669 (e98f287ee): `"currently experiencing high
+demand"` joins the retryable patterns with an oracle-mirroring pin.
+No row promoted (provider deterministic slice). Gate green: pi-ai
+lib 486/486, retry 33/33, pi-ai strict clippy, fmt, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Next: commit + push, then continue the new-drift triage
+(remaining: unsubscribe, forced-prompts, changelog-only,
+signal-shell, vercel-thinking, thinking-notices, eval-harness x2,
+thinking-replay, gemini-levels).
+
 ### Provider slice G — Cloudflare 520 retry
 
 Ported upstream #9627 (e5d1838): `"520"` joins the retryable status

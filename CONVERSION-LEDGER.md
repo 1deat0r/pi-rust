@@ -2,6 +2,22 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice H: Azure peak-load retry (last updated 2026-09-18)
+
+Slice H (new drift, upstream #9669 fixed by e98f287ee): the shared
+retry classifier treats Azure peak-load capacity text ("currently
+experiencing high demand") as transient, alongside the adjacent
+`overloaded` entry — one pattern line plus the oracle-mirroring pin
+(full Azure sentence asserted retryable). TDD red-first mindset
+(pattern absent → pin would fail; verified green after). Gate: pi-ai
+lib 486/486, retry 33/33, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (provider-lane
+deterministic slice; live Azure peak-load traffic unverifiable
+offline). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Provider slice G: Cloudflare 520 retry (last updated 2026-09-18)
 
 Slice G (new drift, upstream #9627 fixed by e5d1838): the shared

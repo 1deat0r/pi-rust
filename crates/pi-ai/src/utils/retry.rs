@@ -108,6 +108,7 @@ const NON_RETRYABLE_PROVIDER_LIMIT_PATTERNS: &[&str] = &[
 const RETRYABLE_PROVIDER_PATTERNS: &[&str] = &[
     // Generic provider load, HTTP status, and server-side transient failures.
     "overloaded",
+    "currently experiencing high demand",
     "rate.?limit",
     "too many requests",
     "429",
@@ -402,6 +403,18 @@ mod tests {
     fn keeps_provider_limit_errors_non_retryable() {
         assert!(!is_retryable_assistant_error(&err_msg(
             "429 quota exceeded"
+        )));
+    }
+
+    #[test]
+    fn matches_azure_peak_load_capacity_errors_upstream_9669() {
+        // Regression for upstream #9669 (e98f287ee): Azure peak-load
+        // capacity text is transient ("currently experiencing high
+        // demand"), retryable like other provider-load wording.
+        // Oracle: `packages/ai/test/retry.test.ts` ("matches Azure
+        // peak-load capacity errors" case).
+        assert!(is_retryable_assistant_error(&err_msg(
+            "The system is currently experiencing high demand and cannot process your request."
         )));
     }
 
