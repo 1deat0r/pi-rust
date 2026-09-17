@@ -2,14 +2,15 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice N — renamed-proxy thinking replay (uncommitted)
+### Provider slice N — renamed-proxy thinking replay committed + pushed
 
 Upstream #9188 (1283afd0d): evidence-only — requested id +
 `responseModel` already correct, signed thinking survives replay.
 Two pins green on first run. anthropic_provider_parity 14/14, pi-ai
 strict clippy clean, fmt clean, conversion 100.00% (166/166), parity
 dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
-unchanged. Next: commit + push, then continue the new-drift triage.
+unchanged. Committed `61b63da`, pushed, hashes match. Next:
+continue the new-drift triage.
 
 ### Provider slice M — Gemini thinking-level gate committed + pushed
 
