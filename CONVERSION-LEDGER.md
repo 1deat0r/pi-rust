@@ -2,6 +2,24 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice N: renamed-proxy thinking replay (last updated 2026-09-18)
+
+Slice N (new drift, upstream #9188 fixed by 1283afd0d): evidence-
+only — the lane already keeps the requested model id while
+recording the provider-reported id in `responseModel` (with
+fallback pricing), so signed thinking survives `transform_messages`
+replay when a proxy relabels the model. Two pins prove both halves
+(requested-id + `responseModel` on the wire shape; signed thinking
+block survives replay). No source change needed; verified green on
+first run (confirms prior port, not new behavior). Gate:
+anthropic_provider_parity 14/14, pi-ai strict clippy clean, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (provider-lane
+deterministic slice; live proxy-relabel traffic unverifiable
+offline). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Provider slice M: Gemini thinking-level gate (last updated 2026-09-18)
 
 Slice M (new drift, upstream 16235fd93): the three per-family

@@ -7,6 +7,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice N — renamed-proxy thinking replay
+
+Upstream #9188 (1283afd0d): evidence-only — the lane already keeps
+the requested id + `responseModel` with fallback pricing, so signed
+thinking survives replay. Two pins green on first run. No row
+promoted (provider slice; live proxy traffic offline-unverifiable).
+Gate green: anthropic_provider_parity 14/14, pi-ai strict clippy,
+fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue the
+new-drift triage.
+
 ### Provider slice M — Gemini thinking-level gate
 
 Ported upstream 16235fd93: one `uses_google_thinking_level` gate

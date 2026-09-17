@@ -764,3 +764,109 @@ fn simple_options_type_remains_provider_neutral() {
     };
     assert_eq!(options.reasoning, Some(ThinkingLevel::Medium));
 }
+
+#[test]
+fn renamed_proxy_model_keeps_requested_id_with_response_model_upstream_9188() {
+    // Regression pin for upstream #9188 (1283afd0d): when a proxy
+    // relabels the model, the assistant message keeps the requested
+    // model id while the provider-reported id is recorded separately
+    // (`responseModel`), so signed thinking stays replayable. TDD RED:
+    // verify current behavior first.
+    let model = mid_convo_model();
+    let response_model = "kimi-for-coding";
+    let events = vec![
+        pi_ai::sse::SseEvent {
+            data: format!(
+                "{{\"type\":\"message_start\",\"message\":{{\"id\":\"m\",\"model\":\"{response_model}\",\"usage\":{{\"input_tokens\":100,\"output_tokens\":0}}}}}}"
+            ),
+            event: Some("message_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#.to_string(),
+            event: Some("content_block_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#.to_string(),
+            event: Some("content_block_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_stop","index":0}"#.to_string(),
+            event: Some("content_block_stop".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#.to_string(),
+            event: Some("message_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_stop"}"#.to_string(),
+            event: Some("message_stop".to_string()),
+            id: None,
+        },
+    ];
+    let output = process_anthropic_events(&model, &events, |_| {}).unwrap();
+    assert_eq!(output.model(), Some(model.id.as_str()));
+    // `responseModel` lives beside `model` on the assistant message;
+    // read it through the serialized shape like the usage rollups do.
+    let wire = serde_json::to_value(&output).expect("assistant serializes");
+    assert_eq!(
+        wire.get("responseModel").and_then(|v| v.as_str()),
+        Some(response_model)
+    );
+}
+
+#[test]
+fn renamed_proxy_model_keeps_signed_thinking_replayable_upstream_9188() {
+    // Second half of upstream #9188 (1283afd0d): replay through
+    // `transform_messages` keeps the signed thinking block because the
+    // assistant message still carries the requested model id.
+    let model = mid_convo_model();
+    let response_model = "kimi-for-coding";
+    let events = vec![
+        pi_ai::sse::SseEvent {
+            data: format!(
+                "{{\"type\":\"message_start\",\"message\":{{\"id\":\"m\",\"model\":\"{response_model}\",\"usage\":{{\"input_tokens\":100,\"output_tokens\":0}}}}}}"
+            ),
+            event: Some("message_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"reasoning","signature":"c2ln"}}"#.to_string(),
+            event: Some("content_block_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_stop","index":0}"#.to_string(),
+            event: Some("content_block_stop".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#.to_string(),
+            event: Some("message_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_stop"}"#.to_string(),
+            event: Some("message_stop".to_string()),
+            id: None,
+        },
+    ];
+    let output = process_anthropic_events(&model, &events, |_| {}).unwrap();
+    let replayed = pi_ai::api::transform_messages::transform_messages::<
+        fn(&str, &Model, &AssistantMessage) -> String,
+    >(&[Message::Assistant(output)], &model, None);
+    assert_eq!(replayed.len(), 1);
+    let Message::Assistant(replayed_assistant) = &replayed[0] else {
+        panic!("expected assistant message");
+    };
+    let thinking: Vec<_> = replayed_assistant
+        .content()
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Thinking { .. }))
+        .collect();
+    assert_eq!(thinking.len(), 1, "signed thinking must survive replay");
+}
