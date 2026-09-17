@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice U — unknown-pattern evidence (uncommitted)
+### CLI slice U — unknown-pattern evidence committed + pushed
+
+CLI-036 unknown-pattern residual closed with a real-process pin
+(no source change; row note extended, held). List-models 4/4, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `e3b02c0`, pushed, hashes match. Next: continue phase 1.
 
 CLI-036 unknown-pattern residual closed with a real-process pin
 (no source change; row note extended, held). List-models 4/4, fmt
