@@ -377,3 +377,47 @@ fn skill_path_loads_without_error() {
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     assert!(sandbox.stdout(&out).contains("faux response to: hello"));
 }
+
+#[test]
+fn explicit_skill_reaches_provider_payload_cli_032() {
+    // CLI-032 residual: an explicit `--skill` path must be included in
+    // the provider payload, observable as increased input-token usage
+    // versus the same turn without it.
+    let sandbox = Sandbox::new("skill-payload");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(cwd.join("skills").join("payload-skill")).unwrap();
+    fs::write(
+        cwd.join("skills").join("payload-skill").join("SKILL.md"),
+        "---\nname: payload-skill\ndescription: A payload test skill\n---\nSkill body with substantial content to move the token needle well beyond estimator noise floors",
+    )
+    .unwrap();
+
+    let usage_input = |extra: &[&str]| -> i64 {
+        let mut args = vec![
+            "--mode",
+            "json",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-session",
+        ];
+        args.extend_from_slice(extra);
+        args.push("skill payload probe");
+        let out = sandbox.pi(&cwd, &args);
+        assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+        let stdout = sandbox.stdout(&out);
+        stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+            .and_then(|event| event["message"]["usage"]["input"].as_i64())
+            .expect("assistant usage with input tokens")
+    };
+    let without = usage_input(&[]);
+    let with = usage_input(&["--skill", &cwd.join("skills").to_string_lossy()]);
+    assert!(
+        with > without,
+        "explicit skill must reach the payload: without={without} with={with}"
+    );
+}
