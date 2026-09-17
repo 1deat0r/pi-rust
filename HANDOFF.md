@@ -85,7 +85,14 @@ Next: continue phase 1.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Agent slice Y — truncated summaries (uncommitted)
+### Agent slice Y — truncated summaries committed + pushed
+
+Upstream #7048 (97fa14e39): shared failure helper rejects
+length-stop summaries at 3 sites. New helper + branch pin green.
+Compaction 24/24, pi-agent lib 276/276, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
+No row promoted; metrics unchanged. Committed `27b9d7f`, pushed,
+hashes match. Next: continue phase 1.
 
 Upstream #7048 (97fa14e39): shared failure helper rejects
 length-stop summaries at 3 sites. New helper + branch pin green.
