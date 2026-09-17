@@ -153,3 +153,41 @@ fn export_missing_file_is_error() {
         sandbox.stderr(&out)
     );
 }
+
+#[test]
+fn export_overwrites_existing_output_and_honors_explicit_suffix() {
+    // CLI-029 residual: an existing output file is replaced, and an
+    // explicit output path is used verbatim (no suffix validation),
+    // matching upstream exportFromFile.
+    let sandbox = Sandbox::new("overwrite");
+    let cwd = sandbox.root.clone();
+    let out_path = cwd.join("existing-output.html");
+    fs::write(&out_path, "stale content").expect("seed stale output");
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "--export",
+            fixture("export_session.jsonl").to_str().unwrap(),
+            out_path.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let html = fs::read_to_string(&out_path).expect("read overwritten output");
+    assert!(html.contains("<!DOCTYPE html>"), "must be replaced HTML");
+    assert!(!html.contains("stale content"));
+
+    let jsonl_out = cwd.join("explicit-output.jsonl");
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "--export",
+            fixture("export_session.jsonl").to_str().unwrap(),
+            jsonl_out.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        jsonl_out.exists(),
+        "explicit suffix path must be written verbatim"
+    );
+}

@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### CLI slice P — export overwrite evidence
+
+Closed the CLI-029 overwrite/suffix residual with a real-process
+pin (no source change; row note extended, held). No row promoted
+(XSS breadth open). Gate green: export 5/5, fmt, conversion
+100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice O — unknown-tool evidence
 
 Closed the CLI-021 unknown-tool process residual with a real-

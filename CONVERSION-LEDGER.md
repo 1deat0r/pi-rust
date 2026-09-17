@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice P: export overwrite evidence (last updated 2026-09-17)
+
+Slice P (CLI-029 residual): real-process pin proving export
+replaces an existing output file and writes explicit-suffix
+paths verbatim (matching upstream exportFromFile). No source
+change needed; row note extended, statuses held. Gate: export
+suite 5/5, fmt clean, conversion 100.00% (166/166), parity
+register + dashboard OK (upstream=d7296c0). No parity row
+promoted (HTML/XSS breadth open). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### CLI slice O: unknown-tool evidence (last updated 2026-09-17)
 
 Slice O (CLI-021 residual): real-process pin proving unknown

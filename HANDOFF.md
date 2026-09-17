@@ -59,6 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### CLI slice P — export overwrite evidence (uncommitted)
+
+CLI-029 overwrite/suffix residual closed with a real-process pin
+(no source change; row note extended, held). Export 5/5, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue phase 1.
+
 ### CLI slice O — unknown-tool evidence committed + pushed
 
 CLI-021 unknown-tool residual closed with a real-process pin (no
@@ -67,10 +75,7 @@ clean, conversion 100.00% (166/166), parity register + dashboard
 OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
 Committed `c7165a9`, pushed, hashes match. Next: continue phase 1.
 
-CLI-021 unknown-tool residual closed with a real-process pin (no
-source change; row note extended, held). Flag matrix 7/7, fmt
-clean, conversion 100.00% (166/166), parity register + dashboard
-OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 Next: commit + push, then continue phase 1.
 
 ### CLI slice N — invalid-catalog evidence committed + pushed
