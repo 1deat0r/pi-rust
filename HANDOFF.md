@@ -2,14 +2,14 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice H — Azure peak-load retry (uncommitted)
+### Provider slice H — Azure peak-load retry committed + pushed
 
 Upstream #9669 (e98f287ee): peak-load capacity text joins the
 retryable patterns with an oracle-mirroring pin. pi-ai lib 486/486,
 retry 33/33, pi-ai strict clippy clean, fmt clean, conversion
 100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
-No row promoted; metrics unchanged. Next: commit + push, then
-continue the new-drift triage.
+No row promoted; metrics unchanged. Committed `eacec53`, pushed,
+hashes match. Next: continue the new-drift triage.
 
 ### Provider slice G — Cloudflare 520 retry committed + pushed
 
