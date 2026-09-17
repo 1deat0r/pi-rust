@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Agent slice G — proxy EOF error
+
+Ported upstream #8997 (ebc374490): proxy EOF without terminal
+event finalizes an error (pusher terminal tracking). New loopback
+pin, true-RED TDD via hang. No row promoted (agent deterministic
+slice). Gate green: pi-agent lib 273/273, proxy 13/13, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+the sweep.
+
 ### Provider slice F — Google transient retry
 
 Ported upstream #7471 (b9d360a2c): generative-ai initial request

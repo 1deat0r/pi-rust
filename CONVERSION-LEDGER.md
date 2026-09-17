@@ -2,6 +2,21 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Agent slice G: proxy EOF error (last updated 2026-09-17)
+
+Slice G (pin era, upstream #8997 fixed by ebc374490): proxy EOF
+without a terminal done/error event now surfaces an error instead
+of hanging `result()` forever. The pusher's terminal tracking
+(`finished`) gates the close: unterminated EOF finalizes an error.
+New loopback pin (unterminated text event + close → Error, settles
+promptly; TDD true-RED via 10s hang first). Gate: pi-agent lib
+273/273, proxy 13/13, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0). Pre-existing pi-agent
+clippy module-inception unchanged on clean HEAD. No parity row
+promoted (agent deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Provider slice F: Google transient retry (last updated 2026-09-17)
 
 Slice F (pin era, upstream #7471 fixed by b9d360a2c): the

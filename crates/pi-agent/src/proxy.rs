@@ -366,6 +366,18 @@ pub fn stream_proxy(
                 return;
             }
         }
+        // Upstream #8997: EOF without a terminal done/error event must
+        // surface an error, not hang `result()` forever. The pusher
+        // records terminal pushes in `finished`.
+        if !sink.finished {
+            finalize_error(
+                &mut sink,
+                &mut partial,
+                false,
+                "Proxy stream ended without a terminal event".to_string(),
+            );
+            return;
+        }
         // Normal completion: the terminal `done` event was already pushed by
         // process_proxy_event; upstream calls stream.end() without a final
         // message to close the channel.
@@ -1234,6 +1246,74 @@ mod tests {
         };
         let stream = stream_proxy(&model, &context, opts);
         let (_, message) = stream.collect().await;
+        assert_eq!(message.stop_reason(), Some(StopReason::Error));
+        assert!(message.error_message().is_some());
+    }
+
+    #[tokio::test]
+    async fn stream_proxy_eof_without_terminal_event_is_an_error_upstream_8997() {
+        // Upstream #8997: EOF without a terminal done/error event must
+        // surface an error, not hang `result()` forever. The server
+        // sends one unterminated text event, then closes.
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0u8; 4096];
+            let mut header_end = 0;
+            while header_end == 0 {
+                let n = tokio::io::AsyncReadExt::read(&mut socket, &mut request)
+                    .await
+                    .expect("read request");
+                if n == 0 {
+                    break;
+                }
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = end + 4;
+                    break;
+                }
+            }
+            let body = concat!(
+                "data: {\"type\":\"text_start\",\"contentIndex\":0}\n",
+                "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hel\"}",
+            );
+            let header = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(header.as_bytes())
+                .await
+                .expect("write header");
+            socket.write_all(body.as_bytes()).await.expect("write body");
+            // Close without a terminal event and without a trailing newline.
+        });
+
+        let model = sample_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: Vec::<Tool>::new(),
+        };
+        let stream = stream_proxy(
+            &model,
+            &context,
+            ProxyStreamOptions {
+                signal: None,
+                auth_token: "token".into(),
+                proxy_url: format!("http://{address}"),
+                options: Default::default(),
+            },
+        );
+        let (_, message) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), stream.collect())
+                .await
+                .expect("proxy EOF must settle, not hang");
+        server.abort();
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
         assert!(message.error_message().is_some());
     }

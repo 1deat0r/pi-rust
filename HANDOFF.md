@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Agent slice G — proxy EOF error (uncommitted)
+
+Upstream #8997 (ebc374490): proxy EOF without terminal event
+finalizes an error via pusher tracking. New loopback pin green,
+true-RED TDD via 10s hang. pi-agent lib 273/273, proxy 13/13, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then continue the sweep.
+
 ### Provider slice F — Google transient retry committed + pushed
 
 Upstream #7471 (b9d360a2c): generative-ai retries transient
@@ -12,12 +21,7 @@ dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
 unchanged. Committed `57ce12b`, pushed, hashes match. Next:
 continue the pin-era sweep.
 
-Upstream #7471 (b9d360a2c): generative-ai retries transient
-errors/statuses per maxRetries. New loopback pin green, TDD
-red-first. pi-ai lib 483/483, exhaustive 18/18, pi-ai strict
-clippy clean, fmt clean, conversion 100.00% (166/166), parity
-dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
-unchanged. Next: commit + push, then continue the pin-era sweep.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Transcript leaf 4 — initial-message helpers committed + pushed
 
