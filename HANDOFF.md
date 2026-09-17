@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Extension slice K — handler unsubscribe (uncommitted)
+### Extension slice K — handler unsubscribe committed + pushed
 
 Upstream #9630 (46c9de40): `on()` returns an unsubscribe handle
 (index-addressed removal, empty-key drop, safe rerun); snapshot half
@@ -10,8 +10,8 @@ assessed-not-ported. New pin, TDD red-first. extensions_parity
 10/10, extensions lib 74/74, scoped rustfmt clean, conversion
 100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
 Pre-existing clippy verified identical on clean HEAD. No row
-promoted; metrics unchanged. Next: commit + push, then continue the
-new-drift triage.
+promoted; metrics unchanged. Committed `ad824b8`, pushed, hashes
+match. Next: continue the new-drift triage.
 
 ### Provider slice J — Vercel unsigned thinking committed + pushed
 
