@@ -59,6 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### CLI slice M — name persistence evidence (uncommitted)
+
+CLI-019 newline/restart residual closed with a real-process pin
+(no source change; row note extended, held). Restart 12/12, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue phase 1.
+
 ### Maintenance — stale catalog pins committed + pushed
 
 Repaired nvidia id list + copilot filter fixture to vendored data

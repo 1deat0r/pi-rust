@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice M: name persistence evidence (last updated 2026-09-17)
+
+Slice M (CLI-019 residual): real-process pin proving Unicode/
+newline `--name` persists normalized (edge-trimmed, newline-
+collapsed) in the session file and survives reopen with verified
+append. No source change needed; row note extended, statuses held.
+Gate: restart suite 12/12, fmt clean, conversion 100.00% (166/166),
+parity register + dashboard OK (upstream=d7296c0). No parity row
+promoted (startup/footer/picker display still open). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Maintenance: stale catalog pins (last updated 2026-09-17)
 
 Repaired two pins stale against vendored data (both red on clean

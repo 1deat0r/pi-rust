@@ -1168,3 +1168,65 @@ fn resume_print_mode_variants_fail_closed_and_reopen_the_newest_session() {
         "resume must select the newest session: {header}"
     );
 }
+
+#[test]
+fn named_session_persists_normalized_name_across_reopen_cli_019() {
+    // CLI-019 residual: Unicode/newline display names persist normalized
+    // and survive session reopen.
+    let sandbox = Sandbox::new("named");
+    let run_args = [
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--print",
+    ];
+    let first = sandbox
+        .command()
+        .args(run_args)
+        .args([
+            "--session-id",
+            "named-session",
+            "--name",
+            "  Refactor auth héllo\nmodule  ",
+        ])
+        .arg("first prompt")
+        .output()
+        .expect("run named child");
+    assert!(first.status.success(), "named stderr: {}", stderr(&first));
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(files.len(), 1);
+    let content = fs::read_to_string(&files[0]).expect("read named session");
+    assert!(
+        content.contains("Refactor auth héllo module"),
+        "normalized name must persist: {content:.200}"
+    );
+    assert!(
+        !content.contains("  Refactor") && !content.contains("module  "),
+        "edge whitespace must be trimmed"
+    );
+
+    let second = sandbox
+        .command()
+        .args(run_args)
+        .args(["--session"])
+        .arg(&files[0])
+        .arg("--print")
+        .arg("second prompt")
+        .output()
+        .expect("run reopen child");
+    assert!(
+        second.status.success(),
+        "reopen stderr: {}",
+        stderr(&second)
+    );
+    let reopened = fs::read_to_string(&files[0]).expect("read reopened session");
+    assert!(
+        reopened.contains("Refactor auth héllo module"),
+        "name must survive reopen"
+    );
+    assert!(reopened.contains("second prompt"));
+}

@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### CLI slice M — name persistence evidence
+
+Closed the CLI-019 newline/restart process residual with a real-
+process pin (no source change; row note extended, held). No row
+promoted (display breadth open). Gate green: restart 12/12, fmt,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### Maintenance — stale catalog pins
 
 Repaired nvidia id list + copilot filter fixture to vendored data
