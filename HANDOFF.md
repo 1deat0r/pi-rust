@@ -5,18 +5,20 @@
 Documentation-only (no source, test, or parity row changed):
 `.markdownlint-cli2.jsonc` + `scripts/docs-lint.sh` (README.md +
 AGENTS.md lint-clean, 0 issues); `.githooks/pre-commit` portabilized
-(PATH cargo, infra exemption, living-docs lint) and verified runnable
-here — hook exit 0 on the staged set; README status rewritten (7
-stale 2026-08 checkpoints removed, current counts: pi-ai 484, pi-tui
-409, pi-agent 276, catalog 1,351, pi-coding-agent 29 pre-existing
-failures disclosed); HANDOFF.md 6077→947 lines and PLAN.md
-4414→501 lines via frozen archives; GATES.md frozen record with the
-launch/live tail archived; dashboard retired-narrative banner; stale
-notes corrected (drift L/N supersession, hook portability); AGENTS.md
-doc map added. Validation: docs-lint 0 issues, hook exit 0,
-conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). Metrics unchanged. Next: commit + push, then
-continue the parity sweep.
+(PATH cargo, infra exemption, living-docs lint; metric checks rescoped
+to README/registers/dashboard so archived snapshots are never
+rewritten) and verified runnable here — hook exit 0 on the staged set;
+README status rewritten (7 stale 2026-08 checkpoints removed, current
+counts: pi-ai 484, pi-tui 409, pi-agent 276, catalog 1,351,
+pi-coding-agent 29 pre-existing failures disclosed); HANDOFF.md
+6077→947 lines and PLAN.md 4414→501 lines via frozen archives;
+GATES.md frozen record with the launch/live tail archived; dashboard
+retired-narrative banner; stale notes corrected (drift L/N
+supersession, hook portability); AGENTS.md doc map added. Validation:
+docs-lint 0 issues, hook exit 0, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). Metrics unchanged.
+Committed `beb0fdf`, pushed, hashes match. Next: continue the parity
+sweep.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
