@@ -3861,4 +3861,37 @@ mod resolve_tests {
                 ))
         );
     }
+
+    #[test]
+    fn recursive_discovery_follows_symlinked_package_roots_res_006() {
+        // RES-006 residual: package resource roots behind a symlink
+        // resolve through the link (missing targets stay empty,
+        // never an error).
+        let root = std::env::temp_dir().join(format!("pi-pkg-symlink-{}", uuid::Uuid::new_v4()));
+        let target = root.join("target");
+        let prompts = target.join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("linked.md"), "# linked").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, root.join("linked")).unwrap();
+
+        #[cfg(unix)]
+        {
+            let found = collect_recursive_resource_entries(
+                &root.join("linked").join("prompts"),
+                ResourceType::Prompts,
+                &root.join("linked"),
+            );
+            assert_eq!(found.len(), 1, "symlinked prompts must resolve");
+            assert!(found[0].ends_with("linked.md"));
+        }
+
+        let missing = collect_recursive_resource_entries(
+            &root.join("absent").join("prompts"),
+            ResourceType::Prompts,
+            &root.join("absent"),
+        );
+        assert!(missing.is_empty(), "missing roots stay empty");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

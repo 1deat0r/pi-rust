@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Resource slice M — symlink-root pin (uncommitted)
+
+RES-006 symlink residual closed with a recursive-discovery pin
+(evidence-only; no source change; row note extended, held). New pin
+1/1 green, scoped rustfmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). Pre-existing
+ignore-file pin failure verified identical on clean HEAD via stash.
+No row promoted; metrics unchanged. Next: commit + push, then
+continue the sweep.
+
 ### Extension slice K — UI prompt events committed + pushed
 
 Upstream #8355 (ccfe79ed2): nesting-aware prompt emitter on

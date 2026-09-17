@@ -2,6 +2,23 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Resource slice M: symlink-root pin (last updated 2026-09-17)
+
+Slice M (RES-006 residual): new pin proving recursive package
+resource discovery follows a symlinked package root (one linked
+prompts file resolves through the link) while absent roots stay
+empty, never an error. Evidence-only; no source change needed
+(discovery already follows symlinks). Row note extended, statuses
+held. Gate: new pin green (`--lib
+recursive_discovery_follows_symlinked` 1/1), scoped file
+rustfmt clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). Pre-existing
+`ignore_file_excludes_auto_discovered_skill` failure verified
+identical on clean HEAD via stash. No parity row promoted
+(installed-package/missing-package breadth open). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Extension slice K: UI prompt events (last updated 2026-09-17)
 
 Slice K (pin era, upstream #8355 fixed by ccfe79ed2): blocking
