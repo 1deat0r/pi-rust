@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Extension slice I — tool schema validation (uncommitted)
+### Extension slice I — tool schema validation committed + pushed
+
+Upstream #9300 (acaa253cc): `register_tool` rejects non-object
+schemas at registration. New 4-shape pin green. Loader 16/16,
+fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `49e7442`, pushed, hashes match. Next: continue the
+sweep.
 
 Upstream #9300 (acaa253cc): `register_tool` rejects non-object
 schemas at registration. New 4-shape pin green. Loader 16/16,
