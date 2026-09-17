@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice M — Gemini thinking-level gate (uncommitted)
+### Provider slice M — Gemini thinking-level gate committed + pushed
 
 Upstream 16235fd93: one shared `uses_google_thinking_level` gate,
 verbatim level mapping, MINIMAL disabled fallback, both lanes share
@@ -10,7 +10,8 @@ it. New gate pin + updated disabled pin, TDD red-first. Google
 49/49, vertex 22/22, pi-ai lib 487/487, pi-ai strict clippy clean,
 fmt clean, conversion 100.00% (166/166), parity dashboard OK
 (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
-Next: commit + push, then continue the new-drift triage.
+Committed `ce3dacc`, pushed, hashes match. Next: continue the
+new-drift triage.
 
 ### Transcript slice L — SystemMessage.replace removed committed + pushed
 
