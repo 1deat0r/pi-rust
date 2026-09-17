@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Tool slice I — signal-terminated shell exit codes (uncommitted)
+### Tool slice I — signal-terminated shell exit codes committed + pushed
 
 Upstream #9577 (a8b3dd19): shared executor maps signal termination
 to 128+signo (KILL→137, TERM→143; neither→1). New Unix-gated pin,
@@ -10,7 +10,8 @@ TDD red-first (Some(0) vs Some(137)). Tools 23/23, pi-agent lib
 276/276, scoped rustfmt clean, conversion 100.00% (166/166), parity
 dashboard OK (58/318, upstream=d7296c0). Pre-existing clippy
 verified identical on clean HEAD. No row promoted; metrics
-unchanged. Next: commit + push, then continue the new-drift triage.
+unchanged. Committed `4a070d3`, pushed, hashes match. Next:
+continue the new-drift triage.
 
 ### Provider slice H — Azure peak-load retry committed + pushed
 
