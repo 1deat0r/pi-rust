@@ -2,14 +2,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice G — Cloudflare 520 retry (uncommitted)
+### Provider slice G — Cloudflare 520 retry committed + pushed
 
 Upstream #9627 (e5d1838): `"520"` joins the retryable patterns; RED
 pin for the exact oracle wording was pre-staged, now green. pi-ai
 lib 485/485, retry 32/32, pi-ai strict clippy clean, fmt clean,
 conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next: commit
-+ push, then triage the 13-commit new drift (e4c75a732 → 46c9de40).
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`3b8e474`, pushed, hashes match. Drive-by hook fix: the bundle rule
+no longer demands unchanged files be staged (staged-file presence
+only), and the progress check applies to staged checkpoint docs —
+hook exit 0 verified on the real set. Next: triage the 13-commit new
+drift (e4c75a732 → 46c9de40).
 
 ## Doc-hygiene pass 2026-09-17 — documentation system optimization
 
