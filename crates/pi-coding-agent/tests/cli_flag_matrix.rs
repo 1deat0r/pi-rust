@@ -287,3 +287,32 @@ fn rpc_rejects_file_arguments_before_starting_the_protocol() {
         "protocol output must not start after a CLI boundary error"
     );
 }
+
+#[test]
+fn unknown_tools_flag_value_proceeds_without_the_tool_cli_021() {
+    // CLI-021 residual: unknown `--tools` values do not fail the turn;
+    // the allowlist resolves against known tools (matching upstream,
+    // which has no unknown-tool diagnostic on this path).
+    let sandbox = Sandbox::new("unknown-tools");
+    let out = sandbox.pi(
+        &sandbox.root,
+        &[
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--tools",
+            "nonexistent-tool",
+            "--no-session",
+            "--print",
+            "unknown tool turn",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox
+            .stdout(&out)
+            .contains("faux response to: unknown tool turn"),
+        "no faux reply"
+    );
+}

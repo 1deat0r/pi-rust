@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice O: unknown-tool evidence (last updated 2026-09-17)
+
+Slice O (CLI-021 residual): real-process pin proving unknown
+`--tools` values resolve against known tools without failing the
+turn (matching upstream's diagnostic-free path). No source change
+needed; row note extended, statuses held. Gate: flag matrix 7/7,
+fmt clean, conversion 100.00% (166/166), parity register +
+dashboard OK (upstream=d7296c0). No parity row promoted
+(extension-execution breadth open). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### CLI slice N: invalid-catalog evidence (last updated 2026-09-17)
 
 Slice N (CLI-020 residual): real-process pin proving a malformed
