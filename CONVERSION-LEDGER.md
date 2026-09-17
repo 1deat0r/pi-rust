@@ -101,6 +101,20 @@ register + dashboard OK (upstream=d7296c0). No parity row promoted
 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
 overall 58/266, whole-product 58/318).
 
+### CFG slice AA: migration no-rewrite (last updated 2026-09-17)
+
+Slice AA (CFG-004 residual): real-process pin proving legacy
+settings migrate in memory while the on-disk file stays
+byte-identical until a real change (matching upstream's
+migrate-on-read contract; TDD red first on a wrong rewrite
+expectation, corrected by archaeology). No source change needed;
+row note extended, statuses held. Gate: config suite 5/5, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (upstream=d7296c0). No parity row promoted (broader restart
+matrices open). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### CFG slice Z: unknown-key retention (last updated 2026-09-17)
 
 Slice Z (CFG-001 residual): unknown-key retention pin proving

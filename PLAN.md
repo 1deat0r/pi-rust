@@ -65,6 +65,15 @@ conversion 100.00% (166/166), parity register + dashboard OK
 (upstream=d7296c0, 58/318). Next: commit + push, then continue
 phase 1.
 
+### CFG slice AA — migration no-rewrite
+
+Closed the CFG-004 restart residual with a no-rewrite process pin
+(TDD red-first on wrong expectation, corrected by archaeology; no
+source change; row note extended, held). No row promoted
+(matrices open). Gate green: config 5/5, fmt, conversion 100.00%
+(166/166), parity register + dashboard OK (upstream=d7296c0,
+58/318). Next: commit + push, then continue phase 1.
+
 ### CFG slice Z — unknown-key retention
 
 Closed the CFG-001 retention residual with a save round-trip pin

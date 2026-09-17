@@ -208,3 +208,37 @@ fn malformed_models_json_degrades_to_bundled_catalog_on_print_cli_020() {
         error(&output)
     );
 }
+
+#[test]
+fn legacy_settings_migrate_in_memory_without_rewriting_cfg_004() {
+    // CFG-004 residual: a legacy settings file migrates in memory
+    // (queueMode → steeringMode, websockets → transport) while the
+    // on-disk file is left untouched until a real setting changes —
+    // matching upstream, which migrates on read/merge but never
+    // proactively rewrites. The turn completes normally.
+    let sandbox = Sandbox::new("migration");
+    let legacy = r#"{"queueMode":"one-at-a-time","websockets":true,"customFutureKey":"keep-me"}"#;
+    sandbox.write_global_settings(legacy);
+
+    let output = sandbox.run(&[
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--no-session",
+        "--print",
+        "migration probe",
+    ]);
+    assert!(output.status.success(), "stderr: {}", error(&output));
+    assert_eq!(text(&output), "faux response to: migration probe\n");
+
+    let after =
+        fs::read_to_string(sandbox.agent.join("settings.json")).expect("read settings file");
+    assert_eq!(
+        after, legacy,
+        "startup must not rewrite the settings file: {after}"
+    );
+}

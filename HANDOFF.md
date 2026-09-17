@@ -85,6 +85,15 @@ Next: continue phase 1.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### CFG slice AA — migration no-rewrite (uncommitted)
+
+CFG-004 restart residual closed with a no-rewrite process pin
+(TDD red-first, corrected by archaeology; no source change; row
+note extended, held). Config 5/5, fmt clean, conversion 100.00%
+(166/166), parity register + dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then continue phase 1.
+
 ### CFG slice Z — unknown-key retention committed + pushed
 
 CFG-001 retention residual closed with a save round-trip pin
@@ -93,11 +102,7 @@ CFG-001 retention residual closed with a save round-trip pin
 upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `f8cc9bd`, pushed, hashes match. Next: continue phase 1.
 
-CFG-001 retention residual closed with a save round-trip pin
-(TDD red-first on flush). Settings 35/35, fmt clean, conversion
-100.00% (166/166), parity register + dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then continue phase 1.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Agent slice Y — truncated summaries committed + pushed
 
