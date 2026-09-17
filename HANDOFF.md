@@ -2,7 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Provider slice F — Google transient retry (uncommitted)
+### Provider slice F — Google transient retry committed + pushed
+
+Upstream #7471 (b9d360a2c): generative-ai retries transient
+errors/statuses per maxRetries. New loopback pin green, TDD
+red-first. pi-ai lib 483/483, exhaustive 18/18, pi-ai strict
+clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
+unchanged. Committed `57ce12b`, pushed, hashes match. Next:
+continue the pin-era sweep.
 
 Upstream #7471 (b9d360a2c): generative-ai retries transient
 errors/statuses per maxRetries. New loopback pin green, TDD
