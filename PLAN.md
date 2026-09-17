@@ -7,6 +7,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Drift triage — remaining 5 commits assessed (no slices)
+
+Read all five oracle diffs at 46c9de40: eval-harness validation
+(queued behind pi-evals contract), TUI footer eval (out of scope +
+no Rust option counterpart), changelog wording (docs-only),
+contributor approval (metadata), thinking-drop notice (no Rust
+renderer string; blocked on interactive diagnostics projection).
+New-drift score: 8/13 ported (slices G–N), 5/13 assessed. No row
+promoted. Next: commit + push, then resume the parity sweep
+(transcript wave b, or next residual).
+
 ### Provider slice N — renamed-proxy thinking replay
 
 Upstream #9188 (1283afd0d): evidence-only — the lane already keeps

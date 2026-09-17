@@ -2,6 +2,42 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Drift triage: remaining 5 commits assessed (last updated 2026-09-18)
+
+Assessment-only (no source change; oracle diffs read at 46c9de40):
+
+- 5a3a03a7f eval-harness transcript validation (#9706): the evals
+  harness derives the verified system prompt from transcript replay
+  (`getCurrentSystemPrompt`) and restructures run/cleanup failure
+  aggregation. The Rust `pi-evals` harness has no system-prompt
+  verification surface at all (no `verifySystemPrompt` counterpart,
+  no `expectedPiDocumentation` option) — porting one call site
+  without the eval-harness contract it serves would be decoration.
+  Queued behind a pi-evals harness-parity assessment, not a slice.
+- 42cd371ba TUI context-footer eval (#9705): new eval fixture +
+  4-line `terminal?` option passthrough on the interactive mode.
+  Eval-fixture authoring is out of the 318-row acceptance scope;
+  the `terminal?` option has no Rust interactive-mode counterpart
+  to plumb. No slice; recorded.
+- 781139411 changelog wording: docs-only, single-line CHANGELOG
+  tweak with no behavioral referent. No slice.
+- 7140838fd contributor approval: `.github/APPROVED_CONTRIBUTORS`
+  metadata, no product surface. No slice.
+- 465853498 thinking-drop notice shortening: the shortened
+  `Anthropic dropped N thinking blocks (details in session)` notice
+  lives in the TS interactive renderer, which has no Rust
+  counterpart emitting that string (verified: no `Anthropic
+  dropped` string in `crates/`). TUI-surface slice, blocked on the
+  interactive assistant-diagnostics projection — recorded, not
+  ported.
+
+New-drift score: 8/13 ported as slices G–N (520, Azure peak-load,
+signal exits, Vercel unsigned thinking, unsubscribe, replace
+removal, Gemini gate, renamed-proxy replay), 5/13 assessed above.
+No parity row promoted by this assessment. Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Provider slice N: renamed-proxy thinking replay (last updated 2026-09-18)
 
 Slice N (new drift, upstream #9188 fixed by 1283afd0d): evidence-
