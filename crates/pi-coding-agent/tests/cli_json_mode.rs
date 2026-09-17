@@ -778,3 +778,46 @@ fn json_exclude_tools_shrinks_prompt_usage_cli_022() {
         "excluding bash must shrink prompt usage: full={full} excluded={excluded}"
     );
 }
+
+#[test]
+fn json_no_tools_flags_strip_prompt_usage_cli_023_024() {
+    // CLI-023/024 residual: `--no-tools` and `--no-builtin-tools`
+    // strip the tool contribution from the provider payload,
+    // observable as collapsed input-token usage (extension-tool
+    // retention stays unit-covered: CLI cannot load native
+    // factories out-of-process).
+    let sandbox = Sandbox::new("no-tools-usage");
+    let usage_input = |extra: &[&str]| -> i64 {
+        let mut args = vec![
+            "--mode",
+            "json",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-session",
+        ];
+        args.extend_from_slice(extra);
+        args.push("no-tools probe");
+        let out = sandbox.pi(&sandbox.root, &args);
+        assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+        let stdout = sandbox.stdout(&out);
+        stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+            .and_then(|event| event["message"]["usage"]["input"].as_i64())
+            .expect("assistant usage with input tokens")
+    };
+    let full = usage_input(&[]);
+    let no_tools = usage_input(&["--no-tools"]);
+    let no_builtin = usage_input(&["--no-builtin-tools"]);
+    assert!(
+        no_tools < full,
+        "--no-tools must shrink prompt usage: full={full} stripped={no_tools}"
+    );
+    assert!(
+        no_builtin < full,
+        "--no-builtin-tools must shrink prompt usage: full={full} stripped={no_builtin}"
+    );
+}

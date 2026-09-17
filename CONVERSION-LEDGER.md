@@ -76,6 +76,19 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice R: no-tools usage evidence (last updated 2026-09-17)
+
+Slice R (CLI-023/024 residual): real-process pin proving both
+`--no-tools` and `--no-builtin-tools` collapse reported
+input-token usage versus full tools (extension retention stays
+unit-covered: CLI cannot load native factories out-of-process).
+No source change needed; both row notes extended, statuses held.
+Gate: JSON suite 9/9, fmt clean, conversion 100.00% (166/166),
+parity register + dashboard OK (upstream=d7296c0). No parity row
+promoted (payload/allowlist breadth open). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### CLI slice Q: exclusion projection evidence (last updated 2026-09-17)
 
 Slice Q (CLI-022 residual): real-process pin proving

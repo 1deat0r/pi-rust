@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### CLI slice R — no-tools usage evidence
+
+Closed the CLI-023/024 payload residual with a JSON-usage process
+pin (no source change; both row notes extended, held). No row
+promoted (payload breadth open). Gate green: JSON 9/9, fmt,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice Q — exclusion projection evidence
 
 Closed the CLI-022 projection residual with a JSON-usage process
