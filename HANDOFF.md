@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice N — invalid-catalog evidence (uncommitted)
+### CLI slice N — invalid-catalog evidence committed + pushed
+
+CLI-020 invalid-catalog residual closed with a real-process pin
+(no source change; row note extended, held). Config 4/4, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `00ec7cc`, pushed, hashes match. Next: continue phase 1.
 
 CLI-020 invalid-catalog residual closed with a real-process pin
 (no source change; row note extended, held). Config 4/4, fmt
