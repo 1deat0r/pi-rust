@@ -2,6 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Resolver slice H — Radius default (uncommitted)
+
+Upstream 9767ba275: Radius default `balanced` (fallback existed;
+no post-login flow to defer). Pin updated. Scoped 41/41, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then continue the sweep.
+
 ### Maintenance — stale catalog pins committed + pushed
 
 Repaired nvidia id list + copilot filter fixture to vendored data
@@ -11,12 +19,7 @@ Repaired nvidia id list + copilot filter fixture to vendored data
 No row promoted; metrics unchanged. Committed `5e3ef43`, pushed,
 hashes match. Next: continue the sweep or wave (b) migration.
 
-Repaired nvidia id list + copilot filter fixture to vendored data
-(both red on clean HEAD). Catalog 14/14, copilot 5/5, pi-ai lib
-483/483 green, pi-ai strict clippy clean, fmt clean, conversion
-100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
-No row promoted; metrics unchanged. Next: commit + push, then
-continue the sweep.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Agent slice G — proxy EOF error committed + pushed
 

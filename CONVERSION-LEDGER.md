@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Resolver slice H: Radius default (last updated 2026-09-17)
+
+Slice H (pin era, upstream 9767ba275): Radius default `auto` →
+`balanced`, falling back to first available (the fallback already
+existed in the resolver). The deferred post-login selection half
+has no Rust target (no post-login selection flow). Pin updated.
+Gate: model_runtime + resolver 41/41, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+Pre-existing pi-tui clippy unchanged on clean HEAD. No parity row
+promoted (config deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Maintenance: stale catalog pins (last updated 2026-09-17)
 
 Repaired two pins stale against vendored data (both red on clean

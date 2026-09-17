@@ -294,7 +294,7 @@ pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
         "openai" => "gpt-5.5",
         "azure-openai-responses" => "gpt-5.4",
         "openai-codex" => "gpt-5.5",
-        "radius" => "auto",
+        "radius" => "balanced",
         "nvidia" => "nvidia/nemotron-3-super-120b-a12b",
         "deepseek" => "deepseek-v4-pro",
         "google" => "gemini-3.1-pro-preview",
@@ -508,7 +508,7 @@ mod tests {
                 "{p} missing default"
             );
         }
-        assert_eq!(default_model_per_provider("radius"), Some("auto"));
+        assert_eq!(default_model_per_provider("radius"), Some("balanced"));
     }
 
     #[tokio::test]

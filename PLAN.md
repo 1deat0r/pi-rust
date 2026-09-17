@@ -2,6 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Resolver slice H — Radius default
+
+Ported upstream 9767ba275 default (`balanced`; fallback existed;
+no post-login flow to defer). Pin updated. No row promoted
+(config slice). Gate green: scoped 41/41, fmt, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
+commit + push, then continue the sweep.
+
 ### Maintenance — stale catalog pins
 
 Repaired nvidia id list + copilot filter fixture to vendored data
