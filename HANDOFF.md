@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Agent slice G — proxy EOF error (uncommitted)
+### Agent slice G — proxy EOF error committed + pushed
+
+Upstream #8997 (ebc374490): proxy EOF without terminal event
+finalizes an error via pusher tracking. New loopback pin green,
+true-RED TDD via 10s hang. pi-agent lib 273/273, proxy 13/13, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`221b782`, pushed, hashes match. Next: continue the sweep.
 
 Upstream #8997 (ebc374490): proxy EOF without terminal event
 finalizes an error via pusher tracking. New loopback pin green,
