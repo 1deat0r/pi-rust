@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Extension slice K — handler unsubscribe
+
+Ported upstream #9630 (46c9de40): `on()` returns an unsubscribe
+handle (index-addressed slot removal, empty-key drop, safe rerun);
+emit-snapshot half assessed-not-ported (no re-entrant mutation path
+in the Rust runner). New pin, TDD red-first. No row promoted
+(extension slice). Gate green: extensions_parity 10/10, extensions
+lib 74/74, scoped rustfmt, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0, 58/318). Pre-existing clippy
+verified identical on clean HEAD. Next: commit + push, then continue
+the new-drift triage.
+
 ### Provider slice J — Vercel unsigned thinking
 
 Ported upstream #9676 (3955b27a1): `allowEmptySignature: true` on

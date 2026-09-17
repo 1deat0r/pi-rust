@@ -41,7 +41,54 @@ impl SourceInfo {
 /// handler dispatch stays generic (upstream `ExtensionHandler`).
 pub type HandlerFn =
     Arc<dyn Fn(&ExtensionContext, &Value) -> Result<Option<Value>, String> + Send + Sync>;
-type Subscription = Arc<dyn Fn() + Send + Sync>;
+type RuntimeSubscription = Arc<dyn Fn() + Send + Sync>;
+
+/// Unsubscribe handle returned by `ExtensionApi::on` (upstream #9630:
+/// `on()` returns `() => void`). Dropping the handle does NOT unsubscribe
+/// (upstream keeps handlers until the returned closure runs); call
+/// [`HandlerSubscription::unsubscribe`] explicitly. Removal targets the
+/// handler slot by index: slots are never reused while the extension
+/// lives, so an id that no longer resolves is a silent no-op.
+#[derive(Debug, Clone)]
+pub struct HandlerSubscription {
+    event: String,
+    index: u64,
+    extension: *mut Extension,
+}
+
+// SAFETY: the handle only travels to the extension owner's thread for
+// explicit unsubscription; the runner dispatches on that same thread.
+unsafe impl Send for HandlerSubscription {}
+unsafe impl Sync for HandlerSubscription {}
+
+impl HandlerSubscription {
+    pub(crate) fn new(event: String, index: u64, extension: *mut Extension) -> Self {
+        Self {
+            event,
+            index,
+            extension,
+        }
+    }
+
+    /// Remove the subscribed handler. No-op when the extension is gone or
+    /// the slot was already removed (upstream splice guards both with
+    /// index checks; an emptied event key is dropped).
+    pub fn unsubscribe(&self) {
+        let extension = unsafe { self.extension.as_mut() };
+        let Some(extension) = extension else {
+            return;
+        };
+        let Some(handlers) = extension.handlers.get_mut(&self.event) else {
+            return;
+        };
+        if (self.index as usize) < handlers.len() {
+            handlers.remove(self.index as usize);
+        }
+        if handlers.is_empty() {
+            extension.handlers.remove(&self.event);
+        }
+    }
+}
 
 /// A request sink owned by a mode.  The sink is called outside the broker
 /// lock, so the mode can forward the request to a pipe/channel without
@@ -3391,6 +3438,10 @@ pub struct Extension {
     pub hidden: bool,
     pub source_info: SourceInfo,
     pub handlers: BTreeMap<String, Vec<HandlerFn>>,
+    /// Monotonic id source for handler subscriptions (upstream #9630:
+    /// `on()` returns an unsubscribe closure; ids make removal exact).
+    /// Handler closures are not comparable, so identity is positional.
+    pub next_handler_id: u64,
     pub tools: BTreeMap<String, RegisteredTool>,
     pub message_renderers: BTreeMap<String, MessageRenderer>,
     pub entry_renderers: BTreeMap<String, EntryRenderer>,
@@ -3777,7 +3828,7 @@ pub struct ExtensionRuntime {
     ui_broker: ExtensionUiBroker,
     active: Arc<AtomicBool>,
     stale_message: Option<String>,
-    subscriptions: Arc<Mutex<Vec<Subscription>>>,
+    subscriptions: Arc<Mutex<Vec<RuntimeSubscription>>>,
 }
 
 impl std::fmt::Debug for ExtensionRuntime {

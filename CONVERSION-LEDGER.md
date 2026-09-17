@@ -2,6 +2,28 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Extension slice K: handler unsubscribe (last updated 2026-09-18)
+
+Slice K (new drift, upstream #9630 fixed by 46c9de40):
+`ExtensionApi::on` now returns a `HandlerSubscription` handle whose
+`unsubscribe()` removes exactly that handler slot (index-addressed:
+closures are not comparable), drops the event key when emptied, and
+is a safe no-op rerun — mirroring the upstream splice guards. The
+upstream commit also snapshots handler lists per emit (mutation-
+during-dispatch safety); the Rust runner borrows `&self.extensions`
+immutably through dispatch with no re-entrant mutation path today,
+so the snapshot half is recorded as assessed-not-ported (no shared-
+mutation hazard exists to fix). New pin proves exact-slot removal +
+dispatch of the survivor + rerun safety. TDD red first (`on()`
+returned `()`). Gate: extensions_parity 10/10, extensions lib 74/74,
+scoped rustfmt clean, conversion 100.00% (166/166), parity dashboard
+OK (upstream=d7296c0). Pre-existing workspace clippy failures
+verified identical on clean HEAD; no new findings in the touched
+files. No parity row promoted (extension deterministic slice).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Provider slice J: Vercel unsigned thinking (last updated 2026-09-18)
 
 Slice J (new drift, upstream #9676 fixed by 3955b27a1): all 237

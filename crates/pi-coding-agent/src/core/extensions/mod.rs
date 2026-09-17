@@ -26,10 +26,10 @@ pub use runner::{
 pub use types::{
     EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionHostAction,
     ExtensionHostActions, ExtensionLoadError, ExtensionRuntime, ExtensionShortcut, FlagType,
-    HandlerFn, InputAction, InputEventResult, LoadExtensionsResult, MarkdownTransformContext,
-    MarkdownTransformer, MessageRenderer, RegisteredCommand, RegisteredTool, RegistrationKind,
-    RegistrationRecord, ResolvedCommand, SourceInfo, ToolExecuteFn, ToolExecutionRequest,
-    NOT_INITIALIZED_MESSAGE, STALE_MESSAGE,
+    HandlerFn, HandlerSubscription, InputAction, InputEventResult, LoadExtensionsResult,
+    MarkdownTransformContext, MarkdownTransformer, MessageRenderer, RegisteredCommand,
+    RegisteredTool, RegistrationKind, RegistrationRecord, ResolvedCommand, SourceInfo,
+    ToolExecuteFn, ToolExecutionRequest, NOT_INITIALIZED_MESSAGE, STALE_MESSAGE,
 };
 pub use wrapper::{
     wrap_registered_tool, wrap_registered_tools, WrappedTool, WrappedToolCall, WrappedToolResult,

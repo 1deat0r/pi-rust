@@ -63,6 +63,62 @@ fn sandbox(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn handler_unsubscribe_removes_only_its_own_registration_upstream_9630() {
+    // Regression pin for upstream #9630 (46c9de40): `on()` returns an
+    // unsubscribe handle; running it removes exactly that handler,
+    // empties the event key when last, and is a safe no-op rerun.
+    // TDD RED: `on()` returns `()` today.
+    let runtime = create_extension_runtime();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let extension = load_extension_from_factory(
+        |api| {
+            let first_seen = Arc::clone(&seen);
+            let _first = api.on(
+                "input",
+                handler(move |_, event| {
+                    first_seen.lock().expect("seen lock").push(format!(
+                        "first:{}",
+                        event["text"].as_str().unwrap_or_default()
+                    ));
+                    Ok(None)
+                }),
+            )?;
+            let second_seen = Arc::clone(&seen);
+            let second = api.on(
+                "input",
+                handler(move |_, event| {
+                    second_seen.lock().expect("seen lock").push(format!(
+                        "second:{}",
+                        event["text"].as_str().unwrap_or_default()
+                    ));
+                    Ok(None)
+                }),
+            )?;
+            // Unsubscribe the second handler before any dispatch.
+            second.unsubscribe();
+            // Rerun is a safe no-op.
+            second.unsubscribe();
+            Ok(())
+        },
+        "/tmp",
+        runtime.clone(),
+        "<inline:unsubscribe>",
+    )
+    .expect("factory load");
+    assert_eq!(
+        extension.handlers.get("input").map(Vec::len),
+        Some(1),
+        "exactly one handler must remain"
+    );
+    let runner = ExtensionRunner::new(vec![extension], runtime, "/tmp".to_string());
+    let out = runner
+        .emit("input", &serde_json::json!({"type": "input", "text": "hi"}))
+        .expect("emit");
+    assert!(out.is_none());
+    assert_eq!(*seen.lock().expect("seen lock"), vec!["first:hi"]);
+}
+
+#[test]
 fn rust_factory_registration_and_runner_dispatch_are_native() {
     let runtime = create_extension_runtime();
     let extension = load_extension_from_factory(

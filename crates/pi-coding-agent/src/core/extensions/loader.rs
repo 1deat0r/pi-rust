@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
     EntryRenderer, Extension, ExtensionFlag, ExtensionHostActions, ExtensionLoadError,
-    ExtensionRuntime, ExtensionShortcut, FlagType, HandlerFn, LoadExtensionsResult,
-    MarkdownTransformer, MessageRenderer, PendingNativeProviderRegistration,
+    ExtensionRuntime, ExtensionShortcut, FlagType, HandlerFn, HandlerSubscription,
+    LoadExtensionsResult, MarkdownTransformer, MessageRenderer, PendingNativeProviderRegistration,
     PendingProviderRegistration, RegisteredCommand, RegisteredTool, RegistrationKind, SourceInfo,
 };
 use crate::core::pi_manifest::read_pi_manifest;
@@ -62,8 +62,15 @@ impl<'a> ExtensionApi<'a> {
         self.extension.source_info.clone()
     }
 
-    pub fn on(&mut self, event: &str, handler: HandlerFn) -> Result<(), String> {
+    fn next_handler_id(&mut self) -> u64 {
+        let id = self.extension.next_handler_id;
+        self.extension.next_handler_id = id.saturating_add(1);
+        id
+    }
+
+    pub fn on(&mut self, event: &str, handler: HandlerFn) -> Result<HandlerSubscription, String> {
         self.assert_active()?;
+        let index = self.next_handler_id();
         self.extension
             .handlers
             .entry(event.to_string())
@@ -71,7 +78,11 @@ impl<'a> ExtensionApi<'a> {
             .push(handler);
         self.extension
             .record_registration(RegistrationKind::Handler, Some(event.to_string()));
-        Ok(())
+        Ok(HandlerSubscription::new(
+            event.to_string(),
+            index,
+            self.extension as *mut Extension,
+        ))
     }
 
     pub fn register_tool(&mut self, tool: RegisteredTool) -> Result<(), String> {
