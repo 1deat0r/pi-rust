@@ -101,6 +101,18 @@ register + dashboard OK (upstream=d7296c0). No parity row promoted
 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
 overall 58/266, whole-product 58/318).
 
+### CFG slice Z: unknown-key retention (last updated 2026-09-17)
+
+Slice Z (CFG-001 residual): unknown-key retention pin proving
+foreign settings keys survive a save round-trip (persistence
+merges modified fields into on-disk content). TDD red first
+(async flush needed). Gate: settings 35/35, fmt clean,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0). No parity row promoted (permission/atomic
+breadth open). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Agent slice Y: truncated summaries (last updated 2026-09-17)
 
 Slice Y (pin era, upstream #7048 fixed by 97fa14e39): shared

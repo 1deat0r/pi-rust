@@ -2401,4 +2401,35 @@ mod tests {
         assert!(manager.drain_errors().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn unknown_settings_keys_survive_save_cfg_001() {
+        // CFG-001 residual: unknown keys are retained across save —
+        // persistence merges modified fields into on-disk content
+        // instead of rewriting from the known schema.
+        let mut manager = SettingsManager::in_memory(m(json!({
+            "defaultProvider": "faux",
+            "futureUnknownKey": {"nested": [1, 2, 3]},
+        })));
+        manager.set_default_provider("openai".to_string());
+        manager.flush_sync();
+        let mut persisted: Option<String> = None;
+        manager
+            .storage()
+            .with_lock(SettingsScope::Global, &mut |current| {
+                persisted = current.map(|content| content.to_string());
+                None
+            });
+        let persisted: Value =
+            serde_json::from_str(&persisted.expect("persisted settings")).expect("valid JSON");
+        assert_eq!(
+            persisted.get("futureUnknownKey"),
+            Some(&json!({"nested": [1, 2, 3]})),
+            "unknown key must survive save: {persisted}"
+        );
+        assert_eq!(
+            persisted.get("defaultProvider"),
+            Some(&Value::String("openai".to_string()))
+        );
+    }
 }

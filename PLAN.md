@@ -65,6 +65,15 @@ conversion 100.00% (166/166), parity register + dashboard OK
 (upstream=d7296c0, 58/318). Next: commit + push, then continue
 phase 1.
 
+### CFG slice Z — unknown-key retention
+
+Closed the CFG-001 retention residual with a save round-trip pin
+(TDD red-first on async flush). No row promoted (permission
+breadth open). Gate green: settings 35/35, fmt, conversion
+100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### Agent slice Y — truncated summaries
 
 Ported upstream #7048 (97fa14e39): shared failure helper
