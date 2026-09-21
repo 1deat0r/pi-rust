@@ -2,18 +2,31 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice O2 — openrouter matrix variant (uncommitted)
+### Provider slice O3 — qwen dimension pin refresh (uncommitted)
+
+Stale count literals fixed (17/17/8 → 18/18/9; oracle #9021 added
+`qwen3.8-flash`, catalog already correct). xiaomi target 2/2, pi-ai
+1 remaining pre-existing failure (zai provider/base_url mismatch,
+identical on clean HEAD — next slice candidate), strict clippy
+clean, fmt clean, diff clean, conversion 100.00% (166/166). Jev:
+route fix_qwen_dims 0.95, guardrail safe 0.90, stop-hook not_done
+0.68 honored (zai scoped out, docs gate completed). No row
+promoted; metrics unchanged (58/318). Next: commit + push, then the
+zai mismatch.
+
+### Provider slice O2 — openrouter matrix variant committed + pushed
 
 Pre-existing `fixture_index` failure fixed: oracle openrouter is
 dual-lane (0.85.1), index listed one lane. Added
 `openrouter/anthropic-messages` text variant to
 `crates/pi-ai/tests/fixtures/provider-matrix/index.json`
 (completions lane → `by-api`). Fixture-JSON-only. provider_matrix
-7/7, pi-ai 1 remaining pre-existing failure (qwen dims 18v17,
-identical on clean HEAD via stash), strict clippy clean, diff
-clean, conversion 100.00% (166/166). Jev: route fix_fixture_index
-0.93, stop done 0.94, guardrail safe 0.92. No row promoted; metrics
-unchanged (58/318). Next: commit + push, then continue the sweep.
+7/7, strict clippy clean, diff clean, conversion 100.00% (166/166).
+Jev: route fix_fixture_index 0.93, stop done 0.94, guardrail safe
+0.92. No row promoted; metrics unchanged (58/318). Committed
+`945c682`, pushed, hashes match. (The qwen dims failure noted at
+commit time is fixed by slice O3 above; the zai mismatch remains.)
+Next: commit + push slice O3, then the zai mismatch.
 
 ### Transcript slice O — copilot migration pins committed + pushed
 

@@ -7,6 +7,19 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice O3 — qwen token-plan dimension pin refresh
+
+Fixed the stale dimension pin: oracle #9021 added `qwen3.8-flash`
+(in-pin ancestor); catalog already correct at 18/18/9, exact-ID pin
+green — only three count literals were stale (17/17/8 → 18/18/9).
+Jev-routed (fix_qwen_dims 0.95), guardrail safe 0.90, stop-hook
+not_done honored (zai mismatch scoped to next unit, docs gate
+completed). No row promoted (provider slice). Gate green: xiaomi
+2/2, pi-ai 1 remaining pre-existing failure (zai, identical on
+clean HEAD), strict clippy, fmt, diff, conversion 100.00%
+(166/166). Next: commit + push, then the zai provider/base_url
+mismatch.
+
 ### Provider slice O2 — openrouter anthropic-messages matrix variant
 
 Fixed the pre-existing `fixture_index` failure: oracle openrouter

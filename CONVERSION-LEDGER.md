@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice O3: qwen token-plan dimension pin refresh (last updated 2026-09-21)
+
+Slice O3 (fixes `qwen_token_plan_rows_keep_exact_catalog_dimensions`
+failure): upstream added `qwen3.8-flash` to all three token-plan
+providers via #9021 (in-pin ancestor of d7296c0); the Rust catalog
+was correctly vendored with 18/18/9 models at the 54a21e9 re-pin and
+the exact-ID pin (`qwen_token_plan_catalog_ids_match_pinned_upstream`)
+already passes — only the count literals (17/17/8) in
+`xiaomi_token_plan_provider_parity.rs` were stale. Fix: three
+numbers to 18/18/9. Slice routed by live Jev Choice
+(`fix_qwen_dims` 0.95, conf 0.93); guardrail `safe` 0.90 honored
+with real gates; stop-hook `not_done` 0.68 honored by scoping the
+separate zai `provider/base_url` mismatch out (different failure
+mode, next unit) and completing the docs gate before claiming done.
+Gate: xiaomi target 2/2, pi-ai suite 1 remaining failure
+(`zai_registrations` provider/base_url mismatch — verified
+identical on clean HEAD via stash, next slice candidate), pi-ai
+strict clippy clean, fmt clean, diff clean, conversion 100.00%
+(166/166). No parity row promoted (provider-lane deterministic
+slice; live vendor traffic unverifiable offline). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Provider slice O2: openrouter anthropic-messages matrix variant (last updated 2026-09-21)
 
 Slice O2 (fixes pre-existing

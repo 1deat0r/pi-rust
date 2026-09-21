@@ -160,7 +160,7 @@ fn qwen_token_plan_rows_keep_exact_catalog_dimensions_and_shared_key_boundary() 
             "Qwen Token Plan",
             "Qwen Token Plan API key",
             "QWEN_TOKEN_PLAN_API_KEY",
-            17,
+            18,
         ),
         (
             "qwen-token-plan-cn",
@@ -168,7 +168,7 @@ fn qwen_token_plan_rows_keep_exact_catalog_dimensions_and_shared_key_boundary() 
             "Qwen Token Plan CN",
             "Qwen Token Plan CN API key",
             "QWEN_TOKEN_PLAN_CN_API_KEY",
-            17,
+            18,
         ),
         (
             "qwen-token-plan-individual",
@@ -176,7 +176,7 @@ fn qwen_token_plan_rows_keep_exact_catalog_dimensions_and_shared_key_boundary() 
             "Qwen Token Plan Individual",
             "Qwen Token Plan Individual API key",
             "QWEN_TOKEN_PLAN_API_KEY",
-            8,
+            9,
         ),
     ];
 
