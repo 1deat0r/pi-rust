@@ -2,7 +2,19 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice R — thinking-level literal repair (uncommitted)
+### Tool slice S — find/grep env + golden refresh (uncommitted)
+
+No source change: `fd`/`rg` installed (upstream `ensureTool`
+contract), rpc golden surgically refreshed (3 catalog-growth
+deltas verified field-by-field). find 15/15, grep 19/19, golden
+green, lib 914 passed (ignore-file bug → next slice; timing
+flakes pre-existing), fmt/diff clean, conversion 100.00%
+(166/166). TOOL-007/008 notes record the binary requirement.
+Jev: route tool_flakes 0.55, stop done 0.90, guardrail safe 0.88.
+No row promoted; metrics unchanged (58/318). Next: commit + push,
+then the ignore-file bug.
+
+### Session slice R — thinking-level literal repair committed + pushed
 
 Pre-existing E0063 breakage fixed: 6 test literals gain
 `provider_thinking_level: None` (session-backends x3, pi-agent
@@ -11,7 +23,8 @@ session-backends 89/89, context 4/4, workspace compiles (2009
 passed, 0 introduced), pi-agent clippy errors pre-existing, fmt
 clean, diff clean, conversion 100.00% (166/166). Jev: stop done
 0.92, guardrail safe 0.89. No row promoted; metrics unchanged
-(58/318). Next: commit + push, then continue the sweep.
+(58/318). Committed `22106b5`, pushed, hashes match.
+Next: continue the sweep.
 
 ### Provider slice Q — zai base-url fix committed + pushed
 

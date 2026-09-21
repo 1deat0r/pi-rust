@@ -7,6 +7,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Tool slice S — find/grep binaries + rpc golden refresh
+
+Environment + stale fixture, no source change: installed
+`fd-find`/`ripgrep` (`fd` symlink; upstream `ensureTool`
+contract), refreshed the rpc golden's 3 catalog-growth deltas
+(field-by-field verified, 51/51 cases otherwise identical).
+Jev-routed (tool_flakes 0.55, weak conf compensated with extra
+grounding), stop done 0.90, guardrail safe 0.88. No row promoted
+(test-hygiene slice). Gate green: find 15/15, grep 19/19, rpc
+golden green, lib 914 passed (ignore-file bug → next slice;
+timing flakes pre-existing), fmt, diff, conversion 100.00%
+(166/166). Next: commit + push, then the ignore-file skill
+exclusion bug.
+
 ### Session slice R — `provider_thinking_level` test-literal repair
 
 Fixed the pre-existing E0063 workspace breakage: 6 test literals

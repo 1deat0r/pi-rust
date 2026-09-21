@@ -2,6 +2,34 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Tool slice S: find/grep binaries + rpc golden refresh (last updated 2026-09-21)
+
+Slice S (test-environment + stale fixture, no source change):
+the find/grep matrices shell out to external `fd`/`rg` binaries
+(per upstream `ensureTool` semantics), both absent on this host —
+11 + 15 deterministic failures with the preserved
+`not available` diagnostics. Fix: `apt install fd-find ripgrep`
+plus `fd`→`fdfind` symlink (environment-only; matches the
+upstream `fd`-on-PATH contract). The rpc golden fixture pinned
+`modelCount: 1294` against a grown catalog (1357): a
+field-by-field actual-vs-fixture diff (via a temporary dump edit,
+since reverted — `rpc.rs` pristine) proved exactly 3
+catalog-growth deltas across 51/51 otherwise-identical cases, so
+the fixture got a surgical 8-line refresh. Slice routed by live
+Jev Choice (`tool_flakes` 0.55 over `rpc_golden` 0.45, conf 0.39 —
+weak routing, compensated with extra grounding: serial isolation
++ oracle `ensureTool` comparison). Jev stop-hook `done` 0.90 and
+guardrail `safe` 0.88, both honored with real gates. Gate: find
+15/15, grep 19/19, rpc golden green, coding-agent lib 914 passed
+with remaining failures classified (ignore-file deterministic
+pre-existing product bug → next slice; session_env/editor/theme
+flaky across runs → pre-existing timing family), fmt clean, diff
+clean, conversion 100.00% (166/166). TOOL-007/008 notes record
+the external-binary requirement. No parity row promoted
+(test-hygiene slice). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Session slice R: `provider_thinking_level` test-literal repair (last updated 2026-09-21)
 
 Slice R (fixes pre-existing E0063 workspace breakage): the
