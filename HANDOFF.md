@@ -2,14 +2,15 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice Q — zai base-url fix (uncommitted)
+### Provider slice Q — zai base-url fix committed + pushed
 
 Pre-existing `zai_registrations` mismatch fixed: constructor base
 gains the oracle's `/coding/` segment (2-line fix). zai 4/4, pi-ai
 681 passed / 0 failed, strict clippy clean, fmt clean, diff
 clean, conversion 100.00% (166/166). Jev: route fix_zai 0.91,
 stop done 0.95, guardrail safe 0.92. No row promoted; metrics
-unchanged (58/318). Next: commit + push, then continue the sweep.
+unchanged (58/318). Committed `d55cef3`, pushed, hashes match.
+Next: continue the parity sweep.
 
 ### Provider slice P — meta-ai provider committed + pushed
 
@@ -23,8 +24,7 @@ diff), clippy/fmt/diff clean, conversion 100.00% (166/166). No
 parity row added (divergence in ledger). Jev: guard safe 0.71, stop
 not_done 0.56 honored via docs gate. Committed `943db85`, pushed,
 hashes match. (The zai mismatch noted at commit time is fixed by
-slice Q above.) Next: commit + push slice Q, then continue the
-sweep.
+slice Q above.) Next: continue the sweep.
 
 ### Provider slice O3 — qwen dimension pin refresh committed + pushed
 
@@ -36,17 +36,7 @@ clean, fmt clean, diff clean, conversion 100.00% (166/166). Jev:
 route fix_qwen_dims 0.95, guardrail safe 0.90, stop-hook not_done
 0.68 honored (zai scoped out, docs gate completed). No row
 promoted; metrics unchanged (58/318). Committed `a8881ce`, pushed,
-hashes match. Next: commit + push slice P, then the zai mismatch.
-
-Stale count literals fixed (17/17/8 → 18/18/9; oracle #9021 added
-`qwen3.8-flash`, catalog already correct). xiaomi target 2/2, pi-ai
-1 remaining pre-existing failure (zai provider/base_url mismatch,
-identical on clean HEAD — next slice candidate), strict clippy
-clean, fmt clean, diff clean, conversion 100.00% (166/166). Jev:
-route fix_qwen_dims 0.95, guardrail safe 0.90, stop-hook not_done
-0.68 honored (zai scoped out, docs gate completed). No row
-promoted; metrics unchanged (58/318). Next: commit + push, then the
-zai mismatch.
+hashes match. Next: continue the sweep.
 
 ### Provider slice O2 — openrouter matrix variant committed + pushed
 
@@ -59,8 +49,8 @@ dual-lane (0.85.1), index listed one lane. Added
 Jev: route fix_fixture_index 0.93, stop done 0.94, guardrail safe
 0.92. No row promoted; metrics unchanged (58/318). Committed
 `945c682`, pushed, hashes match. (The qwen dims failure noted at
-commit time is fixed by slice O3 above; the zai mismatch remains.)
-Next: commit + push slice O3, then the zai mismatch.
+commit time is fixed by slice O3 above; the zai mismatch is fixed
+by slice Q above.) Next: continue the sweep.
 
 ### Transcript slice O — copilot migration pins committed + pushed
 
@@ -74,7 +64,7 @@ handoff 5/5, normalization 3/3, pi-ai strict clippy clean, fmt
 clean, conversion 100.00% (166/166). No row promoted; metrics
 unchanged (58/318). Committed `fe1e1b0`, pushed, hashes match.
 (The `fixture_index` failure noted at commit time is fixed by slice
-O2 below.) Next: commit + push slice O2, then continue the sweep.
+O2 below.) Next: continue the sweep.
 
 ### Drift triage — remaining 5 commits assessed (uncommitted)
 
