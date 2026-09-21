@@ -2,6 +2,26 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice Q: zai base-url `/coding/` segment (last updated 2026-09-21)
+
+Slice Q (fixes pre-existing `zai_registrations` provider/base_url
+mismatch): the Rust `zai_provider` constructor used
+`https://api.z.ai/api/paas/v4` (missing `/coding/`), while the
+oracle (`upstream_pi/packages/ai/src/providers/zai.ts`), the
+vendored `zai.json` catalog models, and the existing
+`openai_completions.rs` lane default all say
+`https://api.z.ai/api/coding/paas/v4`. Fix: constructor base +
+test pin (2 lines). Slice routed by live Jev Choice (`fix_zai`
+0.91, conf 0.88); stop-hook `done` 0.95 and guardrail `safe` 0.92,
+both honored with real gates. Gate: zai target 4/4, pi-ai suite
+681 passed / 0 failed (first fully-green pi-ai run this session),
+pi-ai strict clippy clean, fmt clean, diff clean, conversion
+100.00% (166/166). No parity row promoted (provider-lane
+deterministic slice; live vendor traffic unverifiable offline).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Provider slice P: meta-ai provider (intentional divergence, last updated 2026-09-21)
 
 Slice P (no upstream oracle — `upstream_pi` at d7296c0 has no Meta

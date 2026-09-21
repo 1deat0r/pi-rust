@@ -2,7 +2,16 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice P — meta-ai provider (uncommitted)
+### Provider slice Q — zai base-url fix (uncommitted)
+
+Pre-existing `zai_registrations` mismatch fixed: constructor base
+gains the oracle's `/coding/` segment (2-line fix). zai 4/4, pi-ai
+681 passed / 0 failed, strict clippy clean, fmt clean, diff
+clean, conversion 100.00% (166/166). Jev: route fix_zai 0.91,
+stop done 0.95, guardrail safe 0.92. No row promoted; metrics
+unchanged (58/318). Next: commit + push, then continue the sweep.
+
+### Provider slice P — meta-ai provider committed + pushed
 
 Intentional divergence (no upstream oracle): `meta-ai` provider
 for api.meta.ai — 5 Spark models, effort map, `MODEL_API_KEY` +
@@ -12,8 +21,10 @@ for api.meta.ai — 5 Spark models, effort map, `MODEL_API_KEY` +
 agent 276/276, tui 463/463, zero introduced failures (comm
 diff), clippy/fmt/diff clean, conversion 100.00% (166/166). No
 parity row added (divergence in ledger). Jev: guard safe 0.71, stop
-not_done 0.56 honored via docs gate. Next: commit + push, then
-the zai mismatch.
+not_done 0.56 honored via docs gate. Committed `943db85`, pushed,
+hashes match. (The zai mismatch noted at commit time is fixed by
+slice Q above.) Next: commit + push slice Q, then continue the
+sweep.
 
 ### Provider slice O3 — qwen dimension pin refresh committed + pushed
 

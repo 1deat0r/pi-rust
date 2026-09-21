@@ -7,6 +7,16 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice Q — zai base-url `/coding/` segment
+
+Fixed the pre-existing `zai_registrations` mismatch: constructor
+base was missing `/coding/` (oracle + catalog + lane default all
+agree on `api/coding/paas/v4`). Two-line fix. Jev-routed (fix_zai
+0.91), stop done 0.95, guardrail safe 0.92. No row promoted
+(provider slice). Gate green: zai 4/4, pi-ai 681 passed / 0
+failed, strict clippy, fmt, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Provider slice P — meta-ai provider (intentional divergence)
 
 New `meta-ai` provider (no upstream oracle; spec vendored in

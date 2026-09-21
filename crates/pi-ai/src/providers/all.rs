@@ -1286,7 +1286,7 @@ env_provider!(
     zai_provider,
     "zai",
     "Z.AI",
-    "https://api.z.ai/api/paas/v4",
+    "https://api.z.ai/api/coding/paas/v4",
     ["ZAI_API_KEY"],
     "Z.AI API key"
 );

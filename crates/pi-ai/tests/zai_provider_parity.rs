@@ -82,7 +82,7 @@ fn zai_registrations_match_pinned_catalog_and_auth_contract() {
             "Z.AI",
             "Z.AI API key",
             "ZAI_API_KEY",
-            "https://api.z.ai/api/paas/v4",
+            "https://api.z.ai/api/coding/paas/v4",
             &[
                 "glm-4.7",
                 "glm-5-turbo",
