@@ -2,6 +2,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Transcript slice O — copilot migration pins (uncommitted)
+
+Oracle `transform-messages-copilot-openai-to-anthropic.test.ts`
+(4 cases): evidence-only — lane already correct. Four pins in
+`crates/pi-ai/tests/copilot_openai_to_anthropic_parity.rs` green on
+first run. Jev-routed (live Choice: provider 0.67 →
+transcript_wave_b 0.81; stop-hook done 0.54, guardrail risky 0.9 —
+both honored with real gates). Migration 4/4, transform 4/4,
+handoff 5/5, normalization 3/3, pi-ai 649 passed / 1 pre-existing
+failure (openrouter pair drift, identical on clean HEAD via stash),
+strict clippy clean, fmt clean, conversion 100.00% (166/166). No
+row promoted; metrics unchanged (58/318). Next: commit + push,
+then continue the parity sweep.
+
 ### Drift triage — remaining 5 commits assessed (uncommitted)
 
 Read all five oracle diffs at 46c9de40: eval-harness validation

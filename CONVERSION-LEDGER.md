@@ -2,6 +2,31 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Transcript slice O: copilot openai-to-anthropic migration pins (last updated 2026-09-21)
+
+Slice O (oracle
+`packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts`,
+4 cases): evidence-only — the lane already converts cross-model
+thinking to text, strips `thoughtSignature` on migration, normalizes
+`|` IDs via the Anthropic normalizer, and synthesizes results only
+for still-missing trailing calls. Four pins in
+`crates/pi-ai/tests/copilot_openai_to_anthropic_parity.rs` prove all
+four halves, green on first run (confirms prior port, not new
+behavior). Slice routed by live Jev System One Choice
+(`provider_slice` 0.67 → re-routed `transcript_wave_b` 0.81 after
+evidence showed PROV residuals are live-traffic-bound; key from
+`TYPESAFE_API_KEY`, never stored). Gate: copilot migration 4/4,
+sibling transform 4/4, handoff 5/5, normalization 3/3, pi-ai suite
+649 passed / 1 pre-existing failure
+(`fixture_index_covers_catalog_pairs_and_upstream_oracles`: openrouter
+anthropic-messages catalog pair drift, verified identical on clean
+HEAD via stash), pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166). No parity row promoted (transcript-lane
+deterministic slice; live vendor traffic unverifiable offline).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Drift triage: remaining 5 commits assessed (last updated 2026-09-18)
 
 Assessment-only (no source change; oracle diffs read at 46c9de40):

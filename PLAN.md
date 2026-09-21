@@ -7,6 +7,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Transcript slice O — copilot openai-to-anthropic migration pins
+
+Ported the 4-case oracle migration file
+(`transform-messages-copilot-openai-to-anthropic.test.ts`):
+evidence-only — thinking→text conversion, thoughtSignature strip,
+`|` ID normalization, missing-only synthetic results. Four pins
+green on first run. Slice routed by live Jev Choice
+(provider 0.67 → transcript_wave_b 0.81 after PROV residuals proved
+live-traffic-bound). No row promoted (transcript slice; live traffic
+offline-unverifiable). Gate green: migration 4/4, siblings green,
+pi-ai 649 passed / 1 pre-existing failure (identical on clean HEAD),
+strict clippy, fmt, conversion 100.00% (166/166). Next: commit +
+push, then continue the parity sweep.
+
 ### Drift triage — remaining 5 commits assessed (no slices)
 
 Read all five oracle diffs at 46c9de40: eval-harness validation
