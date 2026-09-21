@@ -2,6 +2,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice R — thinking-level literal repair (uncommitted)
+
+Pre-existing E0063 breakage fixed: 6 test literals gain
+`provider_thinking_level: None` (session-backends x3, pi-agent
+context x2 + conformance). No production change.
+session-backends 89/89, context 4/4, workspace compiles (2009
+passed, 0 introduced), pi-agent clippy errors pre-existing, fmt
+clean, diff clean, conversion 100.00% (166/166). Jev: stop done
+0.92, guardrail safe 0.89. No row promoted; metrics unchanged
+(58/318). Next: commit + push, then continue the sweep.
+
 ### Provider slice Q — zai base-url fix committed + pushed
 
 Pre-existing `zai_registrations` mismatch fixed: constructor base

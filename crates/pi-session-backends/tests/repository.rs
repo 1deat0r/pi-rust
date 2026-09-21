@@ -682,6 +682,7 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
         model: Some("claude-sonnet-4-5".into()),
         response_model: None,
         response_id: None,
+        provider_thinking_level: None,
         usage: Some(assistant_usage.clone()),
         stop_reason: Some(pi_ai::types::StopReason::Stop),
         deferred: None,

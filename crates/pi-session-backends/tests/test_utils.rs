@@ -38,6 +38,7 @@ pub fn assistant_message(text: &str) -> AgentMessage {
             model: Some("claude-sonnet-4-5".into()),
             response_model: None,
             response_id: None,
+            provider_thinking_level: None,
             usage: Some(zero_usage()),
             stop_reason: Some(StopReason::Stop),
             deferred: None,

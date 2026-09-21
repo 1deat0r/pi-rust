@@ -2,6 +2,31 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice R: `provider_thinking_level` test-literal repair (last updated 2026-09-21)
+
+Slice R (fixes pre-existing E0063 workspace breakage): the
+`AssistantMessage.provider_thinking_level` field (thinking
+persistence, "absent for legacy or unmanaged responses") had no
+corresponding literal in 6 test fixtures, so 5
+`pi-session-backends` targets plus `pi-agent` context/conformance
+targets did not compile — masking the whole session-backend
+surface and breaking `cargo test --workspace`. Fix: add
+`provider_thinking_level: None` to the 6 literals
+(`pi-session-backends` test_utils/repository/conformance,
+`pi-agent` context x2 + conformance) — `None` is semantically
+correct (plain unmanaged fixtures, matching `new()`). No
+production change. Jev advisories: stop-hook `done` 0.92,
+guardrail `safe` 0.89, both honored with real gates. Gate:
+session-backends 89/89 (first green run this session), context
+4/4, workspace compiles fully (2009 passed, 29 failed, zero
+introduced — comm diff empty), pi-agent source clippy errors
+(module_inception, unused_assignments) verified pre-existing on
+clean HEAD under the current toolchain, fmt clean, diff clean,
+conversion 100.00% (166/166). No parity row promoted (test-hygiene
+slice). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Provider slice Q: zai base-url `/coding/` segment (last updated 2026-09-21)
 
 Slice Q (fixes pre-existing `zai_registrations` provider/base_url

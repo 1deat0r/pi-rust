@@ -29,6 +29,7 @@ fn assistant_message(text: &str) -> AgentMessage {
             model: Some("claude-sonnet-4-5".into()),
             response_model: None,
             response_id: None,
+            provider_thinking_level: None,
             diagnostics: None,
             usage: Some(Usage {
                 input: 0,
@@ -65,6 +66,7 @@ fn deferred_assistant_message() -> AgentMessage {
             model: Some("gpt-5".into()),
             response_model: None,
             response_id: None,
+            provider_thinking_level: None,
             diagnostics: None,
             usage: None,
             stop_reason: Some(StopReason::Deferred),
