@@ -7,6 +7,19 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice O2 — openrouter anthropic-messages matrix variant
+
+Fixed the pre-existing `fixture_index` failure: oracle openrouter
+is dual-lane since 0.85.1, index was stale single-lane. Added the
+`openrouter/anthropic-messages` text variant (shared fixture,
+`by-api`), corrected the completions lane. Fixture-JSON-only; new
+variant runs through the existing matrix runner. Jev-routed
+(fix_fixture_index 0.93), stop done 0.94, guardrail safe 0.92. No
+row promoted (provider slice). Gate green: provider_matrix 7/7,
+pi-ai 1 remaining pre-existing failure (qwen dims, identical on
+clean HEAD), strict clippy, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Transcript slice O — copilot openai-to-anthropic migration pins
 
 Ported the 4-case oracle migration file

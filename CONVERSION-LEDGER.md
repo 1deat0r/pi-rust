@@ -2,6 +2,32 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice O2: openrouter anthropic-messages matrix variant (last updated 2026-09-21)
+
+Slice O2 (fixes pre-existing
+`fixture_index_covers_catalog_pairs_and_upstream_oracles` failure):
+the oracle (`upstream_pi/packages/ai/src/providers/openrouter.ts`)
+declares openrouter dual-lane (`anthropic-messages` +
+`openai-completions`) since 0.85.1, but the matrix index listed only
+the completions lane with a stale `single-api` status. Fix: added
+the `openrouter/anthropic-messages` text variant (shared
+`anthropic-messages.json` fixture, `by-api` status, oracle paths to
+`openrouter.ts` + `anthropic-messages.ts` +
+`anthropic-sse-parsing.test.ts`) and corrected the completions lane
+to `by-api`. Fixture-JSON-only change; the new variant flows
+through the existing matrix runner. Slice routed by live Jev Choice
+(`fix_fixture_index` 0.93, conf 0.92); stop-hook `done` 0.94 and
+guardrail `safe` 0.92, both honored with real gates. Gate:
+provider_matrix 7/7 (incl. full matrix request/stream/usage/error
+run of the new variant), pi-ai suite 1 remaining failure
+(`qwen_token_plan_rows` dims 18v17 — catalog drift, verified
+identical on clean HEAD via stash), pi-ai strict clippy clean, diff
+clean, conversion 100.00% (166/166). No parity row promoted
+(provider-lane deterministic slice; live vendor traffic unverifiable
+offline). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Transcript slice O: copilot openai-to-anthropic migration pins (last updated 2026-09-21)
 
 Slice O (oracle

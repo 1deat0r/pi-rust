@@ -2,7 +2,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Transcript slice O — copilot migration pins (uncommitted)
+### Provider slice O2 — openrouter matrix variant (uncommitted)
+
+Pre-existing `fixture_index` failure fixed: oracle openrouter is
+dual-lane (0.85.1), index listed one lane. Added
+`openrouter/anthropic-messages` text variant to
+`crates/pi-ai/tests/fixtures/provider-matrix/index.json`
+(completions lane → `by-api`). Fixture-JSON-only. provider_matrix
+7/7, pi-ai 1 remaining pre-existing failure (qwen dims 18v17,
+identical on clean HEAD via stash), strict clippy clean, diff
+clean, conversion 100.00% (166/166). Jev: route fix_fixture_index
+0.93, stop done 0.94, guardrail safe 0.92. No row promoted; metrics
+unchanged (58/318). Next: commit + push, then continue the sweep.
+
+### Transcript slice O — copilot migration pins committed + pushed
 
 Oracle `transform-messages-copilot-openai-to-anthropic.test.ts`
 (4 cases): evidence-only — lane already correct. Four pins in
@@ -10,11 +23,11 @@ Oracle `transform-messages-copilot-openai-to-anthropic.test.ts`
 first run. Jev-routed (live Choice: provider 0.67 →
 transcript_wave_b 0.81; stop-hook done 0.54, guardrail risky 0.9 —
 both honored with real gates). Migration 4/4, transform 4/4,
-handoff 5/5, normalization 3/3, pi-ai 649 passed / 1 pre-existing
-failure (openrouter pair drift, identical on clean HEAD via stash),
-strict clippy clean, fmt clean, conversion 100.00% (166/166). No
-row promoted; metrics unchanged (58/318). Next: commit + push,
-then continue the parity sweep.
+handoff 5/5, normalization 3/3, pi-ai strict clippy clean, fmt
+clean, conversion 100.00% (166/166). No row promoted; metrics
+unchanged (58/318). Committed `fe1e1b0`, pushed, hashes match.
+(The `fixture_index` failure noted at commit time is fixed by slice
+O2 below.) Next: commit + push slice O2, then continue the sweep.
 
 ### Drift triage — remaining 5 commits assessed (uncommitted)
 
