@@ -2,7 +2,30 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Provider slice O3 — qwen dimension pin refresh (uncommitted)
+### Provider slice P — meta-ai provider (uncommitted)
+
+Intentional divergence (no upstream oracle): `meta-ai` provider
+for api.meta.ai — 5 Spark models, effort map, `MODEL_API_KEY` +
+`META_API_KEY` auth, matrix lane, spec in
+`docs/meta-ai-provider-spec.md`. meta_ai 4/4, lib 487/487, matrix
+7/7, exhaustive 18/18, pi-ai 680 passed (1 pre-existing zai),
+agent 276/276, tui 463/463, zero introduced failures (comm
+diff), clippy/fmt/diff clean, conversion 100.00% (166/166). No
+parity row added (divergence in ledger). Jev: guard safe 0.71, stop
+not_done 0.56 honored via docs gate. Next: commit + push, then
+the zai mismatch.
+
+### Provider slice O3 — qwen dimension pin refresh committed + pushed
+
+Stale count literals fixed (17/17/8 → 18/18/9; oracle #9021 added
+`qwen3.8-flash`, catalog already correct). xiaomi target 2/2, pi-ai
+1 remaining pre-existing failure (zai provider/base_url mismatch,
+identical on clean HEAD — next slice candidate), strict clippy
+clean, fmt clean, diff clean, conversion 100.00% (166/166). Jev:
+route fix_qwen_dims 0.95, guardrail safe 0.90, stop-hook not_done
+0.68 honored (zai scoped out, docs gate completed). No row
+promoted; metrics unchanged (58/318). Committed `a8881ce`, pushed,
+hashes match. Next: commit + push slice P, then the zai mismatch.
 
 Stale count literals fixed (17/17/8 → 18/18/9; oracle #9021 added
 `qwen3.8-flash`, catalog already correct). xiaomi target 2/2, pi-ai

@@ -2,6 +2,41 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice P: meta-ai provider (intentional divergence, last updated 2026-09-21)
+
+Slice P (no upstream oracle — `upstream_pi` at d7296c0 has no Meta
+provider): new `meta-ai` provider for Meta Model API (Muse Spark),
+oracle is the vendored `docs/meta-ai-provider-spec.md` (live
+`/v1/models` roster 2026-09-21: 8 entries; chat set = 5 Spark
+models; effort spec from dev.meta.ai/docs/reasoning). Landed:
+`crates/pi-ai/data/meta-ai.json` (5 models, 1M context,
+`supportsReasoningEffort`, `thinkingLevelMap` with off→minimal
+since `none` 400s, max→`max` only on standard-tier 1.3, null
+elsewhere; zero costs = unknown, disclosed in spec);
+`meta_ai_provider()` via `env_provider!` (`MODEL_API_KEY` first per
+docs, `META_API_KEY` alias — the locally working key);
+registration in `builtin_providers` + catalog + re-export; matrix
+`meta-ai/openai-completions` text variant; count pins updated
+(40→41 providers, 1351→1356 models, 50→51 pairs). TDD red-first
+(unresolved `meta_ai_provider` import). Jev advisories: guardrail
+`safe` 0.71 honored with a before/after comm diff proving zero
+introduced failures; stop-hook `not_done` 0.56 honored by
+completing this docs gate before claiming done. Gate: meta_ai
+parity 4/4, pi-ai lib 487/487, matrix 7/7, loopback-exhaustive
+18/18 (incl. a real loopback `meta-ai` lane request), pi-ai suite
+680 passed with only the pre-existing zai failure, pi-agent lib
+276/276, tui 463/463, coding-agent lib zero introduced failures
+(before/after comm diff; remaining failures pre-existing),
+pi-session-backends + pi-agent/context E0063 breakage verified
+pre-existing on clean HEAD, pi-ai strict clippy clean, fmt clean,
+diff clean, conversion 100.00% (166/166). No parity row added or
+promoted: the 318-row universe stays pure-upstream (the audit
+tripwires INVENTORY_TOTAL; a no-oracle provider is recorded here as
+an intentional divergence, not a census row) — live vendor traffic
+unverifiable offline. Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Provider slice O3: qwen token-plan dimension pin refresh (last updated 2026-09-21)
 
 Slice O3 (fixes `qwen_token_plan_rows_keep_exact_catalog_dimensions`

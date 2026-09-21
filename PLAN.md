@@ -7,6 +7,21 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice P — meta-ai provider (intentional divergence)
+
+New `meta-ai` provider (no upstream oracle; spec vendored in
+`docs/meta-ai-provider-spec.md`): 5-model catalog, constructor
+(`MODEL_API_KEY` + `META_API_KEY`), effort map (off→minimal,
+max std-1.3-only), matrix lane, count pins (41 providers, 1356
+models, 51 pairs). TDD red-first. Jev guardrail safe 0.71 (zero
+introduced failures proven), stop-hook not_done honored via docs
+gate. No parity row added (318-universe stays pure-upstream;
+divergence recorded in ledger). Gate
+green: meta_ai 4/4, lib 487/487, matrix 7/7, exhaustive 18/18,
+pi-ai 680 passed (1 pre-existing zai), agent 276/276, tui 463/463,
+clippy, fmt, conversion 100.00% (166/166). Next: commit + push,
+then the zai provider/base_url mismatch.
+
 ### Provider slice O3 — qwen token-plan dimension pin refresh
 
 Fixed the stale dimension pin: oracle #9021 added `qwen3.8-flash`

@@ -66,6 +66,7 @@ static PROVIDER_DATA: &[(&str, &str)] = &[
     ("minimax", include_str!("../data/minimax.json")),
     ("minimax-cn", include_str!("../data/minimax-cn.json")),
     ("mistral", include_str!("../data/mistral.json")),
+    ("meta-ai", include_str!("../data/meta-ai.json")),
     ("moonshotai", include_str!("../data/moonshotai.json")),
     ("moonshotai-cn", include_str!("../data/moonshotai-cn.json")),
     ("nvidia", include_str!("../data/nvidia.json")),
@@ -310,7 +311,7 @@ mod tests {
 
     #[test]
     fn catalog_has_all_39_providers() {
-        assert_eq!(models().len(), 39);
+        assert_eq!(models().len(), 40);
         let providers = get_builtin_providers();
         assert!(providers.contains(&"google".to_string()));
         assert!(providers.contains(&"anthropic".to_string()));
@@ -342,6 +343,7 @@ mod tests {
                 "minimax",
                 "minimax-cn",
                 "mistral",
+                "meta-ai",
                 "moonshotai",
                 "moonshotai-cn",
                 "nvidia",
@@ -453,9 +455,9 @@ mod tests {
             let _ = (provider, provider_models);
         }
         // Cross-check: total model count matches the vendored files.
-        // 1351 after the #9394 Codex retirement (removed gpt-5.4 and
-        // gpt-5.4-mini; was 1353 after the #9423 DeepSeek refresh).
+        // 1356 after the meta-ai provider addition (+5 Muse Spark models;
+        // was 1351 after the #9394 Codex retirement).
         let total: usize = models().values().map(|m| m.len()).sum();
-        assert_eq!(total, 1351);
+        assert_eq!(total, 1356);
     }
 }

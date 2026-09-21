@@ -132,6 +132,7 @@ pub fn builtin_providers() -> Vec<Provider> {
         kimi_coding_provider(),
         minimax_provider(),
         minimax_cn_provider(),
+        meta_ai_provider(),
         mistral_provider(),
         moonshotai_provider(),
         moonshotai_cn_provider(),
@@ -1021,6 +1022,14 @@ env_provider!(
     "https://api.moonshot.cn/v1",
     ["MOONSHOT_API_KEY"],
     "Moonshot AI API key"
+);
+env_provider!(
+    meta_ai_provider,
+    "meta-ai",
+    "Meta Model API",
+    "https://api.meta.ai/v1",
+    ["MODEL_API_KEY", "META_API_KEY"],
+    "Meta Model API key"
 );
 env_provider!(
     nvidia_provider,
@@ -2104,7 +2113,7 @@ mod tests {
     #[test]
     fn all_providers_registered() {
         let providers = builtin_providers();
-        assert_eq!(providers.len(), 40);
+        assert_eq!(providers.len(), 41);
         let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
         for expected in [
             "google",
@@ -2117,6 +2126,7 @@ mod tests {
             "openai-codex",
             "github-copilot",
             "cloudflare-ai-gateway",
+            "meta-ai",
             "mistral",
             "together",
             "zai",
@@ -2874,9 +2884,9 @@ mod tests {
     fn builtin_models_facade_lists_all_models() {
         let models = builtin_models(crate::models::CreateModelsOptions::default());
         let all = models.get_models(None);
-        // 1351 after the #9394 Codex retirement (removed gpt-5.4 and
-        // gpt-5.4-mini; was 1353 after the #9423 DeepSeek refresh).
-        assert_eq!(all.len(), 1351);
+        // 1356 after the meta-ai provider addition (+5 Muse Spark models;
+        // was 1351 after the #9394 Codex retirement).
+        assert_eq!(all.len(), 1356);
         assert!(models.get_model("google", "gemini-2.5-flash").is_some());
         assert!(models.get_model("anthropic", "claude-sonnet-4-6").is_some());
     }

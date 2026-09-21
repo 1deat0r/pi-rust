@@ -721,7 +721,7 @@ async fn every_registered_provider_api_pair_uses_a_real_loopback_request() {
         }
     }
 
-    assert_eq!(pairs.len(), 50, "registered catalog pair count changed");
+    assert_eq!(pairs.len(), 51, "registered catalog pair count changed");
     assert!(!pairs.iter().any(|(_, api)| api == "unknown-api"));
     assert!(pairs
         .iter()
@@ -1902,7 +1902,7 @@ async fn openrouter_mid_convo_effort_level_and_betas_are_wire_visible() {
 #[test]
 fn registered_provider_inventory_is_explicit_about_non_http_surfaces() {
     let providers = builtin_providers();
-    assert_eq!(providers.len(), 40);
+    assert_eq!(providers.len(), 41);
     let ids: BTreeSet<_> = providers
         .iter()
         .map(|provider| provider.id.as_str())
