@@ -1237,7 +1237,17 @@ impl RpcRuntime {
                 crate::core::session_migration::migrate_legacy_session_file(&selected_path)
                     .map_err(|e| format!("migrate selected session: {e}"))?;
             }
-            let source = crate::run::resolve_session_metadata(&repo, selector, &cwd).await?;
+            let source = crate::run::resolve_session_metadata(
+                &repo,
+                selector,
+                &cwd,
+                if args.fork.is_some() {
+                    crate::run::SessionFileIntent::Fork
+                } else {
+                    crate::run::SessionFileIntent::Open
+                },
+            )
+            .await?;
             if args.fork.is_some() {
                 repo.fork(
                     &source,

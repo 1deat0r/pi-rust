@@ -2,6 +2,56 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice Z: empty/invalid source by intent — open-init vs Cannot-fork (last updated 2026-09-22)
+
+Slice Z (slice-Y follow-ups closed; oracle
+`file-operations.test.ts` setSessionFile suite + `forkFrom`
+contract; genuine TDD RED 3/3): the shared selector resolution
+treated empty and invalid sources identically regardless of
+operation. Upstream diverges by intent — `_setSessionFile`
+(initialized via `open`) rewrites a zero-byte file in place with
+a valid header at the explicit path (3 pinned oracle cases:
+rewrite, path preservation, stable id across reload), while
+`forkFrom` refuses empty-or-invalid sources with
+`Cannot fork: source session file is empty or invalid: <path>`
+and never touches the source. Rust failed closed with
+`session … is empty` for both, and slice Y's friendly open
+message was the wrong family for `--fork`. Fix: new
+`SessionFileIntent { Open, Fork }` threaded through
+`metadata_from_session_path(path, cwd, intent)` and
+`resolve_session_metadata` (all five call sites: print/interactive/
+rpc startup keyed on `args.fork`, extension switchSession + import
+use Open); Open initializes an empty file (native v4 header,
+new id, run cwd — `initialize_empty_session_file`, then normal
+parse round-trip) and refuses blank-only/unsupported content with
+the friendly diagnostic; Fork refuses with the Cannot-fork
+family. Early validation passes the matching intent so the
+diagnostic fires before model resolution (slice-Y ordering kept).
+Three new pins in `session_file_invalid.rs` (now covering the
+setSessionFile/forkFrom family): empty `--session` initializes,
+runs a faux turn, and reopens with a stable header id; `--fork`
+empty and non-session sources exit 1 with the oracle
+diagnostic, sources byte-identical (empty stays 0 bytes).
+Migration landmine checked first: v4 files never enter
+`convert_legacy_to_v4`'s rewrite path (type≠session early-return),
+so the read-only append boundary is unaffected. Adjacent oracle
+branches left as follow-ups (first-line JSON parse-failure scan-
+ahead, v3-bad-id/missing-id friendly mapping, missing-path create,
+continue/resume empty ordering — noted: oracle `continueRecent`
+silently starts a fresh session where Rust fails closed with an
+independent diagnostic, suspected CLI-012 note misattribution,
+queued for a dedicated slice). Gate: session_file_invalid 4/4
+(genuine RED 3/3 first), session_import_parity 2/2, flag matrix
+7/7, clean_home 12/12, restart parity 12/12 (incl. read-only +
+missing-parent), file safety 2/2, print 14/14, json 9/9,
+exhaustive 6/6, runtime residual 3/3, extensions 10/10, export
+1/1, coding-agent lib 918/918, fmt clean, clippy all-targets 0
+errors (warnings pre-existing only), diff clean, conversion
+100.00% (166/166). No parity row promoted (CLI-014 + CLI-016
+evidence notes extended; both already PASS). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Session slice Y: invalid-session diagnostic + open-before-model ordering (last updated 2026-09-22)
 
 Slice Y (port of oracle `session-file-invalid.test.ts`, genuine

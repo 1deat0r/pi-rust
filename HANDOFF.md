@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice Z — open-init vs Cannot-fork by intent (uncommitted)
+
+Slice-Y follow-ups closed (oracle setSessionFile suite +
+`forkFrom`; genuine RED 3/3): `SessionFileIntent { Open, Fork }`
+threaded through `metadata_from_session_path(path, cwd, intent)`
++ `resolve_session_metadata` (print/interactive/rpc startup keyed
+on `args.fork`; switchSession/import use Open). Open initializes
+empty files in place (native v4 header, stable id across reopen);
+Fork refuses empty/invalid with `Cannot fork: source session file
+is empty or invalid`, sources byte-identical. v4 files verified
+immune to the migration rewrite path (read-only boundary safe).
+Follow-ups recorded: parse-failure scan-ahead, v3-bad-id mapping,
+missing-path create, continue-empty (suspected CLI-012 note
+misattribution — oracle `continueRecent` starts fresh silently).
+Gates: session_file_invalid 4/4 (RED 3/3), import 2/2, flag 7/7,
+clean_home 12/12, restart 12/12 (read-only + missing-parent),
+file safety 2/2, print 14/14, json 9/9, exhaustive 6/6, runtime
+3/3, extensions 10/10, export 1/1, lib 918/918, fmt, clippy 0
+errors (warnings pre-existing), diff clean, conversion 100.00%
+(166/166). No row promoted (CLI-014 + CLI-016 notes extended);
+metrics unchanged (58/318). Next: commit + push, then continue
+the sweep.
+
 ### Session slice Y — invalid-session diagnostic + ordering (committed + pushed)
 
 Ported oracle `session-file-invalid.test.ts` (RED, two stacked

@@ -7,6 +7,25 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice Z — empty/invalid source by intent (open-init vs Cannot-fork)
+
+Closed slice-Y follow-ups with oracle `file-operations`
+setSessionFile + `forkFrom` contracts (genuine RED 3/3): intent-
+threaded `SessionFileIntent { Open, Fork }` through
+`metadata_from_session_path` and `resolve_session_metadata` (all
+call sites). Open initializes empty files in place (native v4
+header, stable id) and refuses invalid content with the friendly
+diagnostic; Fork refuses both with `Cannot fork: source session
+file is empty or invalid` and never touches the source. v4
+migration-rewrite landmine verified non-applicable. Adjacent
+branches + the suspected CLI-012 continue-empty misattribution
+recorded as follow-ups. No row promoted (CLI-014/CLI-016 notes
+extended). Gate green: session_file_invalid 4/4 (RED 3/3), import
+2/2, flag 7/7, clean_home 12/12, restart 12/12, file safety 2/2,
+print/json/exhaustive/runtime/extensions/export green, lib 918/918,
+clippy 0 errors, fmt, diff, conversion 100.00% (166/166). Next:
+commit + push, then continue the parity sweep.
+
 ### Session slice Y — invalid-session diagnostic + open-before-model ordering
 
 Ported oracle `session-file-invalid.test.ts` (genuine RED, two

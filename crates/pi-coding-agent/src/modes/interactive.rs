@@ -3586,9 +3586,10 @@ async fn apply_pending_extension_lifecycle_actions(
                         &runtime.repo,
                         selector,
                         &runtime.cwd,
+                        crate::run::SessionFileIntent::Open,
                     )
-                        .await
-                        .map_err(|error| format!("switchSession failed: {error}"))?;
+                    .await
+                    .map_err(|error| format!("switchSession failed: {error}"))?;
                     if !session_switch_allowed(runtime, "switch", Some(&metadata.path)) {
                         return Err("session switch cancelled by extension".to_string());
                     }
@@ -6163,7 +6164,17 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             crate::core::session_migration::migrate_legacy_session_file(&selected_path)
                 .map_err(|e| format!("migrate selected session: {e}"))?;
         }
-        let source = crate::run::resolve_session_metadata(&repo, selector, &cwd).await?;
+        let source = crate::run::resolve_session_metadata(
+            &repo,
+            selector,
+            &cwd,
+            if args.fork.is_some() {
+                crate::run::SessionFileIntent::Fork
+            } else {
+                crate::run::SessionFileIntent::Open
+            },
+        )
+        .await?;
         if args.fork.is_some() {
             if let Some(session_id) = args.session_id.as_deref() {
                 if crate::run::find_local_session_by_id(&repo, &cwd, session_id)
@@ -9718,6 +9729,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                         };
                                                         let metadata = match crate::run::metadata_from_session_path(
                                                             std::path::Path::new(&resolved_path),
+                                                            &runtime.cwd,
+                                                            crate::run::SessionFileIntent::Open,
                                                         ) {
                                                             Ok(metadata) => metadata,
                                                             Err(error) => {

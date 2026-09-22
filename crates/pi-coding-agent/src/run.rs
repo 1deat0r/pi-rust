@@ -19,7 +19,7 @@ use pi_agent::harness::SimpleModels;
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::context::{build_session_context, SessionContextBuildOptions};
 use pi_agent::session::memory::{in_memory_metadata, InMemorySessionStorage};
-use pi_agent::session::types::{Entry, EntryNoStats, SessionMetadata};
+use pi_agent::session::types::{Entry, EntryNoStats, JsonlV4Header, SessionMetadata};
 use pi_agent::session::{CreateOptions, ForkOptions, JsonlSessionRepo, Session};
 use pi_agent::tools::image::{
     detect_supported_image_mime_type, process_image, ProcessImageOptions,
@@ -714,12 +714,22 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // `--session`/`--fork` selectors before model resolution, so an invalid
     // session file must fail here — ahead of "No models available" — exactly
     // as the `session-file-invalid` oracle pins. JSON mode already prepares
-    // the session first; this brings print mode in line. Validation is
-    // read-only (plus idempotent legacy migration); full session
+    // the session first; this brings print mode in line. Open intent
+    // initializes an empty file (oracle `_setSessionFile`); fork intent
+    // refuses empty/invalid sources (oracle `forkFrom`). Full session
     // preparation still happens later, so a no-models failure never
-    // creates a durable file.
-    if let Some(selector) = args.session.as_deref().or(args.fork.as_deref()) {
-        validate_explicit_session_file(selector, &cwd)?;
+    // creates a durable file for a plain run.
+    if let Some((selector, intent)) = args
+        .session
+        .as_deref()
+        .map(|selector| (selector, SessionFileIntent::Open))
+        .or_else(|| {
+            args.fork
+                .as_deref()
+                .map(|selector| (selector, SessionFileIntent::Fork))
+        })
+    {
+        validate_explicit_session_file(selector, &cwd, intent)?;
     }
 
     let mut provider =
@@ -1398,7 +1408,19 @@ async fn prepare_run_session_with_settings(
             crate::core::session_migration::migrate_legacy_session_file(&path)
                 .map_err(|error| format!("migrate selected session: {error}"))?;
         }
-        Some(resolve_session_metadata(&repo, selector, cwd).await?)
+        Some(
+            resolve_session_metadata(
+                &repo,
+                selector,
+                cwd,
+                if args.fork.is_some() {
+                    SessionFileIntent::Fork
+                } else {
+                    SessionFileIntent::Open
+                },
+            )
+            .await?,
+        )
     } else if args.continue_session || args.resume {
         let mut sessions = repo
             .list(Some(cwd))
@@ -1580,13 +1602,14 @@ pub(crate) async fn resolve_session_metadata(
     repo: &JsonlSessionRepo<StdFileSystem>,
     selector: &str,
     cwd: &str,
+    intent: SessionFileIntent,
 ) -> Result<SessionMetadata, String> {
     let requested_path = resolve_session_selector_path(selector, cwd);
     let path_like = session_selector_is_path_like(selector);
 
     if path_like {
         if requested_path.is_file() {
-            return metadata_from_session_path(&requested_path);
+            return metadata_from_session_path(&requested_path, cwd, intent);
         }
         return Err(format!("session not found: {selector}"));
     }
@@ -1619,11 +1642,16 @@ fn session_selector_is_path_like(selector: &str) -> bool {
 /// Validate an explicit `--session`/`--fork` path selector before model
 /// resolution (upstream `createSessionManager` → `openSessionOrExit` runs
 /// before the no-models check). Path-like selectors naming an existing file
-/// are opened here so an invalid session file fails with the
-/// `Session file is not a valid pi session` diagnostic first; bare ids and
-/// missing paths are left to full preparation later. Read-only apart from
-/// idempotent legacy migration — never creates a durable file.
-pub(crate) fn validate_explicit_session_file(selector: &str, cwd: &str) -> Result<(), String> {
+/// are opened here so an invalid or empty source fails — or, for
+/// `--session`, initializes — with the oracle diagnostic first; bare ids
+/// and missing paths are left to full preparation later. Apart from
+/// idempotent legacy migration (and the open-intent empty-file header
+/// write, mirroring oracle `_setSessionFile`), this never creates a file.
+pub(crate) fn validate_explicit_session_file(
+    selector: &str,
+    cwd: &str,
+    intent: SessionFileIntent,
+) -> Result<(), String> {
     if !session_selector_is_path_like(selector) {
         return Ok(());
     }
@@ -1632,7 +1660,7 @@ pub(crate) fn validate_explicit_session_file(selector: &str, cwd: &str) -> Resul
         return Ok(());
     }
     crate::core::session_migration::migrate_legacy_session_file(&path)?;
-    metadata_from_session_path(&path)?;
+    metadata_from_session_path(&path, cwd, intent)?;
     Ok(())
 }
 
@@ -1729,22 +1757,80 @@ pub fn normalize_session_name_value(name: &str) -> String {
 /// Read the v4 header for an explicit session file that is not in the
 /// configured repository root. The repository only needs this metadata to
 /// validate/open the file; entries remain decoded by `JsonlSessionRepo::open`.
-pub(crate) fn metadata_from_session_path(path: &Path) -> Result<SessionMetadata, String> {
+/// Which operation is opening an explicit session file. The upstream open
+/// and fork paths share the selector resolution but diverge on empty or
+/// invalid sources: `SessionManager.open` (`_setSessionFile`) initializes
+/// an empty file in place and refuses a non-empty invalid one with the
+/// friendly diagnostic, while `SessionManager.forkFrom` refuses both with
+/// `Cannot fork: source session file is empty or invalid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionFileIntent {
+    Open,
+    Fork,
+}
+
+/// Write a native v4 session header into a zero-byte file at its explicit
+/// path (oracle `_setSessionFile`: entries-empty + size-0 branch preserves
+/// the explicit path and rewrites a valid header).
+fn initialize_empty_session_file(path: &Path, cwd: &str) -> Result<(), String> {
+    let header = JsonlV4Header {
+        kind: "header".into(),
+        version: 4,
+        id: pi_agent::session::new_id(),
+        created_at: pi_agent::session::jsonl::repo::now_ms(),
+        cwd: cwd.to_string(),
+        parent_session_id: None,
+        legacy_parent_session_path: None,
+        metadata: None,
+    };
+    let encoded = pi_agent::session::jsonl::encode_header(&header)
+        .map_err(|error| format!("encode session header {}: {error}", path.display()))?;
+    std::fs::write(path, encoded)
+        .map_err(|error| format!("initialize empty session {}: {error}", path.display()))
+}
+
+fn session_file_refusal(path: &Path, intent: SessionFileIntent) -> String {
+    match intent {
+        SessionFileIntent::Open => {
+            format!("Session file is not a valid pi session: {}", path.display())
+        }
+        SessionFileIntent::Fork => format!(
+            "Cannot fork: source session file is empty or invalid: {}",
+            path.display()
+        ),
+    }
+}
+
+pub(crate) fn metadata_from_session_path(
+    path: &Path,
+    cwd: &str,
+    intent: SessionFileIntent,
+) -> Result<SessionMetadata, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("read session {}: {error}", path.display()))?;
-    let first_line = content
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| format!("session {} is empty", path.display()))?;
+    if content.is_empty() {
+        match intent {
+            SessionFileIntent::Open => {
+                // Oracle `_setSessionFile`: initialize in place, then the
+                // header round-trips through the normal parse below.
+                initialize_empty_session_file(path, cwd)?;
+                return metadata_from_session_path(path, cwd, intent);
+            }
+            SessionFileIntent::Fork => return Err(session_file_refusal(path, intent)),
+        }
+    }
+    let Some(first_line) = content.lines().find(|line| !line.trim().is_empty()) else {
+        // Non-empty but blank-only: upstream `loadEntriesFromFile` yields
+        // no entries, which `_setSessionFile` refuses (size > 0) and
+        // `forkFrom` refuses with the Cannot-fork family.
+        return Err(session_file_refusal(path, intent));
+    };
     let header: serde_json::Value = serde_json::from_str(first_line)
         .map_err(|error| format!("parse session header {}: {error}", path.display()))?;
     let is_v4 = header.get("kind").and_then(serde_json::Value::as_str) == Some("header");
     let is_v3 = header.get("type").and_then(serde_json::Value::as_str) == Some("session");
     if !is_v4 && !is_v3 {
-        return Err(format!(
-            "Session file is not a valid pi session: {}",
-            path.display()
-        ));
+        return Err(session_file_refusal(path, intent));
     }
     if is_v3 {
         let parsed = pi_agent::session::jsonl::parse_v3_header(first_line)
@@ -3194,9 +3280,10 @@ mod tests {
             .await
             .unwrap();
 
-        let resolved = resolve_session_metadata(&repo, "shared-id", &local)
-            .await
-            .unwrap();
+        let resolved =
+            resolve_session_metadata(&repo, "shared-id", &local, SessionFileIntent::Open)
+                .await
+                .unwrap();
         assert_eq!(
             resolved.path,
             local_session.get_metadata().await.path,
