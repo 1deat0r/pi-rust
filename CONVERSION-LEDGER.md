@@ -2,6 +2,31 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice W: import refusal pins + fork assessment (last updated 2026-09-22)
+
+Slice W: two SES-012 invalid-import pins in the new
+`crates/pi-coding-agent/tests/session_import_parity.rs`
+(missing-file refusal precedes session-dir creation; invalid
+header refuses with the diagnostic). Genuine TDD RED: the header
+pin caught copy-before-validate, and the oracle
+(`importFromJsonl`: `copyFileSync` before `SessionManager.open`)
+confirmed copy-then-open semantics — the pin asserts the refusal,
+not the staging copy. SES-010 assessed-not-portable in the same
+turn: Rust `ForkOptions::Branch` has no branch-name field, so the
+oracle's data-branch rejection and named-branch cases have no
+counterpart surface (porting one rejection without the surface
+would be decoration, slice-K precedent); runtime-level fork needs
+a live key. Slice routed via Jev (`session_next` 0.64, then
+`import_breadth` 0.54 and `fork_matrix` 0.48 — all weak, each
+compensated with direct oracle comparison). Jev stop-hook `done`
+0.64 and guardrail `safe` 0.54 honored by verifying the residual
+risk explicitly (pid-namespaced sandboxes, no shared state, lib
+green). Gate: new target 2/2, coding-agent lib 918/918, fmt
+clean, diff clean, conversion 100.00% (166/166). No parity row
+promoted (session-lane deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Session slice V: torn-tail repair continuity pins (last updated 2026-09-22)
 
 Slice V (oracle `jsonl-storage.test.ts` "torn tail" suite, 7

@@ -2,15 +2,26 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice V — torn-tail pins (uncommitted)
+### Session slice W — import pins + fork assessment (uncommitted)
+
+Two SES-012 refusal pins green (genuine RED: copy-then-open
+confirmed vs oracle). SES-010 assessed-not-portable (no
+branch-name surface). New target 2/2, lib 918/918, fmt/diff
+clean, conversion 100.00% (166/166). Jev: stop done 0.64,
+guardrail safe 0.54 (verified noise). No row promoted; metrics
+unchanged (58/318). Next: commit + push, then continue the
+sweep.
+
+### Session slice V — torn-tail pins committed + pushed
 
 Two oracle torn-tail cases pinned, green first run
 (evidence-only). jsonl_storage 10/10, pi-agent 429, sb 89,
 fmt/diff clean, conversion 100.00% (166/166). Theme lane
 checked first: no reproducible defect (pivot recorded). Jev
 pushback honored via coverage map (2/7 done, rest follow-up).
-No row promoted; metrics unchanged (58/318). Next: commit +
-push, then the remaining torn-tail variants.
+No row promoted; metrics unchanged (58/318). Committed `047aa69`,
+pushed, hashes match. Next: commit + push slice W, then continue
+the sweep.
 
 ### Flake-hunt slice U — test stabilization committed + pushed
 

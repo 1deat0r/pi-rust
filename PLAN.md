@@ -7,6 +7,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice W — import refusal pins + fork assessment
+
+Two SES-012 pins (missing-file, invalid-header), genuine RED
+resolved against oracle copy-then-open semantics. SES-010
+assessed-not-portable (no branch-name surface). Jev-routed
+(weak confs, each oracle-grounded), stop done 0.64, guardrail
+safe 0.54 (residual risk verified as noise). No row promoted
+(session slice). Gate green: new target 2/2, lib 918/918, fmt,
+diff, conversion 100.00% (166/166). Next: commit + push, then
+continue the parity sweep.
+
 ### Session slice V — torn-tail repair continuity pins
 
 Two oracle torn-tail cases pinned (repair-then-append seq
