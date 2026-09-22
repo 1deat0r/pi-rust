@@ -3873,6 +3873,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test fixture setup: panicking assertions are the point
     fn recursive_discovery_follows_symlinked_package_roots_res_006() {
         // RES-006 residual: package resource roots behind a symlink
         // resolve through the link (missing targets stay empty,

@@ -753,7 +753,16 @@ async fn main() {
                         pi_coding_agent::core::timings::print_timings();
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        // Upstream `openSessionOrExit` prefixes startup
+                        // session-file open failures with `Error: ` and
+                        // exits 1 without a stack (session-file-invalid
+                        // oracle); ordinary print-mode runtime errors stay
+                        // raw (`print-mode.ts` catch prints `error.message`).
+                        if err.starts_with("Session file is not a valid ") {
+                            eprintln!("Error: {err}");
+                        } else {
+                            eprintln!("{err}");
+                        }
                         pi_coding_agent::core::timings::print_timings();
                         std::process::exit(1);
                     }

@@ -2,6 +2,49 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice Y: invalid-session diagnostic + open-before-model ordering (last updated 2026-09-22)
+
+Slice Y (port of oracle `session-file-invalid.test.ts`, genuine
+RED): `--session <non-session-file> -p` now prints the upstream
+`openSessionOrExit` diagnostic — `Error: Session file is not a
+valid pi session: <path>`, exit 1, no stack frames — and leaves
+the file byte-identical. The RED run exposed two stacked gaps:
+(a) `metadata_from_session_path` reported
+`session … is not a supported JSONL file` (wrong family — oracle
+maps any non-session header to the friendly `_setSessionFile`
+message), and (b) print-mode `run()` resolved provider/model
+*before* the session selector, so a clean-env launch failed with
+`No models available` instead of the session diagnostic — oracle
+`createSessionManager` (main.ts:676) opens the session ahead of
+the no-models check (main.ts:909); Rust JSON mode already had
+this order, print mode did not. Fixes: friendly message in the
+unsupported-header branch; new `validate_explicit_session_file`
+(read-only + idempotent legacy migration, path-like gate shared
+with `resolve_session_metadata`) invoked after extension load
+and before provider resolution, so full preparation — and its
+durable-file creation — still happens later (clean-home no-models
+never writes JSONL, preserved); main's top-level print prefixes
+`Error: ` only for this family, mirroring `openSessionOrExit`
+while print-mode runtime errors stay raw per `print-mode.ts`
+catch. Drive-by: test-fn `clippy::unwrap` allow on the RES-006
+package-manager pin (pre-existing all-targets clippy error in
+`mod resolve_tests`, untouched by this slice, matching the file's
+sibling allows — unblocked the crate's clippy gate). Adjacent
+oracle branches explicitly out of scope (empty-file init,
+malformed-first-line scan-ahead, v3-bad-id → friendly, missing-
+path create semantics, continue/resume ordering) recorded as
+follow-ups, not absorbed. Gate: session_file_invalid 1/1,
+session_import_parity 2/2, export invalid 1/1, flag matrix 7/7,
+file safety 2/2, clean_home 12/12, restart parity 12/12,
+print/json/exhaustive/runtime suites green, coding-agent lib
+918/918, package_manager 27/27, fmt clean, pi-coding-agent
+all-targets clippy errors 0 (warnings pre-existing only), diff
+clean, conversion 100.00% (166/166). No parity row promoted
+(CLI-014 already PASS; evidence-only note extension). Metrics
+unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Session slice X: torn-tail discriminator fix + 5 remaining pins (last updated 2026-09-22)
 
 Slice X (closes slice V's 5-case follow-up; genuine bug fix, TDD

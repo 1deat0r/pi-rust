@@ -7,6 +7,25 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice Y — invalid-session diagnostic + open-before-model ordering
+
+Ported oracle `session-file-invalid.test.ts` (genuine RED, two
+stacked gaps): friendly `Session file is not a valid pi session`
+diagnostic, and print-mode session open hoisted ahead of model
+resolution (`validate_explicit_session_file`, read-only, before
+provider resolution — mirrors oracle createSessionManager order;
+JSON mode already correct). `Error: ` prefix only for this family
+at main's top-level print (openSessionOrExit mirror). Adjacent
+oracle branches (empty-file init, malformed-line scan, missing-
+path create, continue/resume order) recorded as follow-ups. Drive-
+by: RES-006 test clippy allow (pre-existing all-targets error).
+No row promoted (CLI-014 already PASS). Gate green:
+session_file_invalid 1/1, import 2/2, export 1/1, flag 7/7, file
+safety 2/2, clean_home 12/12, restart 12/12, print/json/exhaustive/
+runtime green, lib 918/918, clippy errors 0, fmt, diff, conversion
+100.00% (166/166). Next: commit + push, then continue the parity
+sweep.
+
 ### Session slice X — torn-tail discriminator fix + 5 remaining pins
 
 Closes slice V's 5-case follow-up with a genuine bug fix (TDD RED

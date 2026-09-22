@@ -710,6 +710,18 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     }
     let _extension_guard = RunExtensionGuard(loaded_extensions.runner.clone());
 
+    // Upstream `createSessionManager` (main.ts) resolves and opens explicit
+    // `--session`/`--fork` selectors before model resolution, so an invalid
+    // session file must fail here — ahead of "No models available" — exactly
+    // as the `session-file-invalid` oracle pins. JSON mode already prepares
+    // the session first; this brings print mode in line. Validation is
+    // read-only (plus idempotent legacy migration); full session
+    // preparation still happens later, so a no-models failure never
+    // creates a durable file.
+    if let Some(selector) = args.session.as_deref().or(args.fork.as_deref()) {
+        validate_explicit_session_file(selector, &cwd)?;
+    }
+
     let mut provider =
         resolve_run_provider(args.provider.as_deref(), args.model.as_deref(), &settings);
     let model_hint = resolve_run_model(
@@ -1570,10 +1582,7 @@ pub(crate) async fn resolve_session_metadata(
     cwd: &str,
 ) -> Result<SessionMetadata, String> {
     let requested_path = resolve_session_selector_path(selector, cwd);
-    let path_like = selector.ends_with(".jsonl")
-        || selector.contains(std::path::MAIN_SEPARATOR)
-        || selector.contains('/')
-        || selector.contains('\\');
+    let path_like = session_selector_is_path_like(selector);
 
     if path_like {
         if requested_path.is_file() {
@@ -1596,6 +1605,35 @@ pub(crate) async fn resolve_session_metadata(
         .map_err(|error| format!("list sessions: {error}"))?;
     find_exact_or_prefix_session(global_sessions, selector)
         .ok_or_else(|| format!("session not found: {selector}"))
+}
+
+/// Whether a session selector addresses a filesystem path rather than a
+/// session id (upstream `resolveSessionPath` gate).
+fn session_selector_is_path_like(selector: &str) -> bool {
+    selector.ends_with(".jsonl")
+        || selector.contains(std::path::MAIN_SEPARATOR)
+        || selector.contains('/')
+        || selector.contains('\\')
+}
+
+/// Validate an explicit `--session`/`--fork` path selector before model
+/// resolution (upstream `createSessionManager` → `openSessionOrExit` runs
+/// before the no-models check). Path-like selectors naming an existing file
+/// are opened here so an invalid session file fails with the
+/// `Session file is not a valid pi session` diagnostic first; bare ids and
+/// missing paths are left to full preparation later. Read-only apart from
+/// idempotent legacy migration — never creates a durable file.
+pub(crate) fn validate_explicit_session_file(selector: &str, cwd: &str) -> Result<(), String> {
+    if !session_selector_is_path_like(selector) {
+        return Ok(());
+    }
+    let path = resolve_session_selector_path(selector, cwd);
+    if !path.is_file() {
+        return Ok(());
+    }
+    crate::core::session_migration::migrate_legacy_session_file(&path)?;
+    metadata_from_session_path(&path)?;
+    Ok(())
 }
 
 fn find_exact_or_prefix_session(
@@ -1704,7 +1742,7 @@ pub(crate) fn metadata_from_session_path(path: &Path) -> Result<SessionMetadata,
     let is_v3 = header.get("type").and_then(serde_json::Value::as_str) == Some("session");
     if !is_v4 && !is_v3 {
         return Err(format!(
-            "session {} is not a supported JSONL file",
+            "Session file is not a valid pi session: {}",
             path.display()
         ));
     }
