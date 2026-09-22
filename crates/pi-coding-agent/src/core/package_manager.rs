@@ -3731,8 +3731,18 @@ mod resolve_tests {
         let pm = resolve_manager(&cwd, &agent);
         let resolved = pm.resolve(None).unwrap();
 
-        assert!(resolved.skills.iter().any(|r| r.path.contains("keep")));
-        assert!(!resolved.skills.iter().any(|r| r.path.contains("secret")));
+        // Scope assertions to this fixture's agent dir: resolve() also
+        // collects the real home's ~/.agents/skills, whose content varies
+        // per host (e.g. a `sops-age-secrets` skill) and must not fail
+        // this fixture's ignore-behavior pin.
+        let agent_prefix = path_to_string(&agent);
+        let fixture_skills: Vec<_> = resolved
+            .skills
+            .iter()
+            .filter(|r| r.path.starts_with(&agent_prefix))
+            .collect();
+        assert!(fixture_skills.iter().any(|r| r.path.contains("keep")));
+        assert!(!fixture_skills.iter().any(|r| r.path.contains("secret")));
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
     }

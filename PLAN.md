@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Extension slice T — ignore-pin host hermeticity
+
+Fixed the `ignore_file` failure: host `~/.agents/skills` content
+(`sops-age-secrets`) leaked into a global assertion; discovery
+itself was already correct (probe-proven). Scoped assertions to
+the fixture dir — test-only change. Jev stop done 0.91,
+guardrail safe 0.89. No row promoted (test-hygiene slice). Gate
+green: target green, lib 916 passed (theme flakes pre-existing
+in isolation-green; pi-tui clippy pre-existing), fmt, diff,
+conversion 100.00% (166/166). Next: commit + push, then continue
+the parity sweep.
+
 ### Tool slice S — find/grep binaries + rpc golden refresh
 
 Environment + stale fixture, no source change: installed

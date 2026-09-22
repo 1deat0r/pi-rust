@@ -2,7 +2,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Tool slice S — find/grep env + golden refresh (uncommitted)
+### Extension slice T — ignore-pin hermeticity (uncommitted)
+
+Host contamination fixed (`sops-age-secrets` leaked into a global
+assertion; discovery already correct). Assertions scoped to the
+fixture dir — test-only. Target green, lib 916 passed (theme
+flakes green in isolation, pre-existing; pi-tui clippy
+pre-existing), fmt/diff clean, conversion 100.00% (166/166).
+CLI-032 note extended. Jev: stop done 0.91, guardrail safe 0.89.
+No row promoted; metrics unchanged (58/318). Next: commit + push,
+then continue the sweep.
+
+### Tool slice S — find/grep env + golden refresh committed + pushed
 
 No source change: `fd`/`rg` installed (upstream `ensureTool`
 contract), rpc golden surgically refreshed (3 catalog-growth
@@ -11,8 +22,10 @@ green, lib 914 passed (ignore-file bug → next slice; timing
 flakes pre-existing), fmt/diff clean, conversion 100.00%
 (166/166). TOOL-007/008 notes record the binary requirement.
 Jev: route tool_flakes 0.55, stop done 0.90, guardrail safe 0.88.
-No row promoted; metrics unchanged (58/318). Next: commit + push,
-then the ignore-file bug.
+No row promoted; metrics unchanged (58/318). Committed `bd0563c`,
+pushed, hashes match. (The ignore-file failure noted at commit
+time is fixed by slice T above.) Next: commit + push slice T,
+then continue the sweep.
 
 ### Session slice R — thinking-level literal repair committed + pushed
 

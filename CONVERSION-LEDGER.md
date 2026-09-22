@@ -2,6 +2,28 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Extension slice T: ignore-pin host hermeticity (last updated 2026-09-21)
+
+Slice T (fixes `ignore_file_excludes_auto_discovered_skill`
+failure): not a product bug — a debug probe proved
+`collect_skill_entries` correctly excludes the fixture's
+`secret/` skill; the failure came from the real
+`~/.agents/skills/sops-age-secrets` on this host leaking into the
+test's global `!path.contains("secret")` assertion. Fix: scope
+both assertions to the fixture agent dir (deterministic on any
+host; avoids racy process-env mutation, which the oracle's
+HOME-override pattern would entail under parallel Rust tests).
+Test-only change. Jev stop-hook `done` 0.91 and guardrail `safe`
+0.89, both honored with real gates. Gate: target green,
+coding-agent lib 916 passed (theme tests green in isolation —
+parallel-load timing flakes, pre-existing; pi-tui dead-code
+clippy pre-existing on clean HEAD), fmt clean, diff clean,
+conversion 100.00% (166/166). CLI-032 note records the
+hermeticity. No parity row promoted (test-hygiene slice). Metrics
+unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Tool slice S: find/grep binaries + rpc golden refresh (last updated 2026-09-21)
 
 Slice S (test-environment + stale fixture, no source change):
