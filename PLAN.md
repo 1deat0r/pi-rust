@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Flake-hunt slice U — parallel-load test stabilization
+
+Fixed three load-dependent flake sources with no behavior
+change: test-only env lock for `session_env` (0/6 → 8/8),
+synchronous watcher baseline capture, `tokio::sync::Mutex`
+registry lock + 3 bisected interferers guarded. Jev-routed
+(flake_hunt 0.59, moderate conf compensated with bisection
+evidence), stop done 0.91, guardrail safe 0.70. No row promoted
+(test-hygiene slice). Gate green: lib 918/918 x3, pi-ai 487,
+agent 276, sb 89, fmt, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Extension slice T — ignore-pin host hermeticity
 
 Fixed the `ignore_file` failure: host `~/.agents/skills` content

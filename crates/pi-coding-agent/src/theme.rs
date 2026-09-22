@@ -378,9 +378,9 @@ fn registered_theme(name: &str) -> Option<RegisteredTheme> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_theme_registry_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+pub(crate) fn test_theme_registry_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// Built-in theme registry (embedded copies of the shipped dark/light JSON).
@@ -854,9 +854,7 @@ mod tests {
 
     #[test]
     fn extension_theme_registration_parses_name_source_dedupes_and_replaces() {
-        let _lock = test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = test_theme_registry_lock().blocking_lock();
         let dir = test_theme_dir("registration");
         std::fs::create_dir_all(&dir).unwrap();
         let first = dir.join("a.json");
@@ -895,9 +893,7 @@ mod tests {
 
     #[test]
     fn extension_theme_registration_retains_source_info() {
-        let _lock = test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = test_theme_registry_lock().blocking_lock();
         let dir = test_theme_dir("source-info");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extension.json");

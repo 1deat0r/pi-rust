@@ -10895,6 +10895,11 @@ mod tests {
 
     #[tokio::test]
     async fn interactive_lifecycle_action_creates_a_real_session() {
+        // Serializes against theme-registry tests: booting the runtime
+        // replaces the global theme registry (production replace
+        // semantics), which would otherwise wipe concurrently asserted
+        // sibling themes. See test_theme_registry_lock.
+        let _lock = crate::theme::test_theme_registry_lock().lock().await;
         let root = std::env::temp_dir().join(format!(
             "pi-interactive-extension-new-session-{}",
             uuid::Uuid::new_v4()
@@ -11124,9 +11129,7 @@ mod tests {
 
     #[test]
     fn interactive_extension_themes_retain_source_info() {
-        let _lock = crate::theme::test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = crate::theme::test_theme_registry_lock().blocking_lock();
         let root = std::env::temp_dir().join(format!(
             "pi-interactive-theme-source-info-{}",
             uuid::Uuid::new_v4()
@@ -11222,6 +11225,9 @@ mod tests {
 
     #[tokio::test]
     async fn interactive_fork_persists_pending_messages_and_returns_selected_text() {
+        // See interactive_lifecycle_action_creates_a_real_session: runtime
+        // boot replaces the global theme registry.
+        let _lock = crate::theme::test_theme_registry_lock().lock().await;
         let root = std::env::temp_dir().join(format!(
             "pi-interactive-fork-execute-{}",
             uuid::Uuid::new_v4()
@@ -12113,6 +12119,9 @@ mod tests {
 
     #[tokio::test]
     async fn interactive_reload_keeps_automatic_filesystem_discovery_empty() {
+        // See interactive_lifecycle_action_creates_a_real_session: runtime
+        // boot replaces the global theme registry.
+        let _lock = crate::theme::test_theme_registry_lock().lock().await;
         let root = std::env::temp_dir().join(format!(
             "pi-interactive-extension-reload-policy-{}",
             uuid::Uuid::new_v4()

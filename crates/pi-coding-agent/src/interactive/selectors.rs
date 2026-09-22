@@ -2873,9 +2873,7 @@ mod tests {
 
     #[test]
     fn theme_selector_includes_registered_extension_name() {
-        let _lock = crate::theme::test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = crate::theme::test_theme_registry_lock().blocking_lock();
         let dir = std::env::temp_dir().join(format!("pi-selector-theme-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extension.json");

@@ -2,6 +2,35 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Flake-hunt slice U: parallel-load test stabilization (last updated 2026-09-22)
+
+Slice U (fixes load-dependent flakes, no behavior change):
+`session_env` env-mutating tests raced process-global
+`PI_SESSION_*` vars (reproduced 0/6 at module scope, then 8/8
+green with a test-only `OnceLock<Mutex<()>>` guard on all 4
+tests); the theme watcher read its mtime baseline inside the
+spawned thread so load-delayed spawn poisoned it (moved to the
+synchronous caller — strictly fewer missed events, oracle
+`clear()`+`set()` replace semantics preserved); the theme
+registry lock migrated `std`→`tokio::sync::Mutex` so async
+runtime-booting tests can hold it, and the 3 bisected
+interferers (`interactive_fork_persists...`,
+`interactive_lifecycle...`, `interactive_reload_keeps...`, whose
+runtime boot replaces the global registry) now guard it.
+Bisected from 61 candidates via quarter/half splits + pairwise
+runs. Slice routed by live Jev Choice (`flake_hunt` 0.59, conf
+0.45 — moderate, compensated with the bisection evidence). Jev
+stop-hook `done` 0.91 and guardrail `safe` 0.70, both honored
+with real gates. Gate: coding-agent lib 918/918 three
+consecutive full runs (was 916/2 flaky), pi-ai lib 487/487,
+pi-agent lib 276/276, session-backends 89/89, fmt clean, diff
+clean, no new clippy (pi-tui dead-code + pi-agent
+module_inception pre-existing on clean HEAD), conversion
+100.00% (166/166). No parity row promoted (test-hygiene
+slice). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Extension slice T: ignore-pin host hermeticity (last updated 2026-09-21)
 
 Slice T (fixes `ignore_file_excludes_auto_discovered_skill`

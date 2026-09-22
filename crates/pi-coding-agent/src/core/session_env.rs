@@ -144,9 +144,21 @@ impl SessionEnvironmentGuard {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    /// Serializes the env-mutating tests below. Rust runs tests in one
+    /// process in parallel while upstream Node runs serially per file, so
+    /// without this lock sibling tests interleave `PI_SESSION_*` writes
+    /// and the snapshot/restore assertions race. Test-only; production
+    /// already serializes through the `active` mutex.
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
 
     #[test]
     fn install_scopes_and_restores_all_values() {
+        let _lock = env_lock().lock().unwrap();
         let previous = SESSION_KEYS
             .into_iter()
             .map(|key| (key, std::env::var(key).ok()))
@@ -168,6 +180,7 @@ mod tests {
 
     #[test]
     fn real_child_process_receives_scoped_session_values() {
+        let _lock = env_lock().lock().unwrap();
         let guard = install("child-session", "/tmp/child.jsonl", "faux", "faux-1", "low");
         let output = std::process::Command::new("/bin/sh")
             .args(["-c", "printf '%s|%s|%s|%s|%s' \"$PI_SESSION_ID\" \"$PI_SESSION_FILE\" \"$PI_PROVIDER\" \"$PI_MODEL\" \"$PI_REASONING_LEVEL\""])
@@ -183,6 +196,7 @@ mod tests {
 
     #[test]
     fn drop_does_not_restore_over_a_newer_owner_value() {
+        let _lock = env_lock().lock().unwrap();
         let previous = SESSION_KEYS
             .into_iter()
             .map(|key| (key, std::env::var(key).ok()))
@@ -212,6 +226,7 @@ mod tests {
 
     #[test]
     fn install_removes_empty_or_stale_child_metadata() {
+        let _lock = env_lock().lock().unwrap();
         let previous = SESSION_KEYS
             .into_iter()
             .map(|key| (key, std::env::var(key).ok()))

@@ -97,10 +97,13 @@ pub fn watch_theme_file(path: PathBuf, name: String) {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
     let watched_path = path;
+    // Capture the baseline synchronously: reading it inside the spawned
+    // thread races thread-spawn scheduling, so a change written before the
+    // first poll would become the invisible baseline and never fire.
+    let mut last_modified = std::fs::metadata(&watched_path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let handle = thread::spawn(move || {
-        let mut last_modified = std::fs::metadata(&watched_path)
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
         while !stop_for_thread.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(100));
             let Ok(modified) =
@@ -403,9 +406,7 @@ mod tests {
 
     #[test]
     fn registered_extension_theme_activation_updates_colors_and_name() {
-        let _lock = crate::theme::test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = crate::theme::test_theme_registry_lock().blocking_lock();
         let dir = test_theme_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extension.json");
@@ -474,9 +475,7 @@ mod tests {
         use std::thread;
         use std::time::{Duration, Instant};
 
-        let _lock = crate::theme::test_theme_registry_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _lock = crate::theme::test_theme_registry_lock().blocking_lock();
         let dir = test_theme_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let first_path = dir.join("first.json");

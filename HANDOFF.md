@@ -2,7 +2,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Extension slice T — ignore-pin hermeticity (uncommitted)
+### Flake-hunt slice U — test stabilization (uncommitted)
+
+No behavior change: session_env env lock, synchronous watcher
+baseline, tokio registry lock + 3 guarded interferers. Lib
+918/918 x3 (was 916/2 flaky), pi-ai 487, agent 276, sb 89,
+fmt/diff clean, conversion 100.00% (166/166). Jev: route
+flake_hunt 0.59, stop done 0.91, guardrail safe 0.70. No row
+promoted; metrics unchanged (58/318). Next: commit + push,
+then continue the sweep.
+
+### Extension slice T — ignore-pin hermeticity committed + pushed
 
 Host contamination fixed (`sops-age-secrets` leaked into a global
 assertion; discovery already correct). Assertions scoped to the
@@ -10,8 +20,9 @@ fixture dir — test-only. Target green, lib 916 passed (theme
 flakes green in isolation, pre-existing; pi-tui clippy
 pre-existing), fmt/diff clean, conversion 100.00% (166/166).
 CLI-032 note extended. Jev: stop done 0.91, guardrail safe 0.89.
-No row promoted; metrics unchanged (58/318). Next: commit + push,
-then continue the sweep.
+No row promoted; metrics unchanged (58/318). Committed `ff4fe8a`,
+pushed, hashes match. Next: commit + push slice U, then continue
+the sweep.
 
 ### Tool slice S — find/grep env + golden refresh committed + pushed
 
