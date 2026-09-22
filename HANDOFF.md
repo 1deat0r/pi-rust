@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice Y — invalid-session diagnostic + ordering (uncommitted)
+### Session slice Y — invalid-session diagnostic + ordering (committed + pushed)
 
 Ported oracle `session-file-invalid.test.ts` (RED, two stacked
 gaps): friendly `Session file is not a valid pi session` message,
@@ -18,8 +18,8 @@ file safety 2/2, clean_home 12/12, restart 12/12, print/json/
 exhaustive/runtime green, lib 918/918, package_manager 27/27,
 clippy errors 0 (warnings pre-existing), fmt, diff clean,
 conversion 100.00% (166/166). No row promoted (CLI-014 note
-extended); metrics unchanged (58/318). Next: commit + push, then
-continue the sweep.
+extended); metrics unchanged (58/318). Committed `1235570`,
+pushed, hashes match. Next: continue the sweep.
 
 ### Session slice X — torn-tail discriminator fix (committed + pushed)
 
