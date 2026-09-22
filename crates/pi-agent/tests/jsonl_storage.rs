@@ -907,6 +907,159 @@ fn load_repairs_torn_tail_then_admits_writes_with_seq_continuity() {
     });
 }
 
+/// Oracle `jsonl-storage.test.ts` "torn tail" follow-up: a torn final
+/// array line is discarded wholly (entries + facts never admitted), the
+/// file is truncated to the valid prefix, and no `.tmp` is left behind.
+#[test]
+fn load_discards_torn_array_tail_wholly() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("torn-array", "/work")).unwrap();
+        let prefix = format!("{header_line}\n");
+        let entry = serde_json::to_string(&pi_agent::session::types::Mutation::Entry {
+            lane: Some("main".into()),
+            entry: Entry::Custom {
+                id: "kept".into(),
+                seq: 1,
+                parent_id: None,
+                timestamp: 1,
+                custom_type: "note".into(),
+                data: None,
+            },
+        })
+        .unwrap();
+        // Torn array line: starts as a valid multi-mutation array but is
+        // cut off without its terminator (oracle: `splitCompleteLines`).
+        let torn = format!(
+            "[{entry}, {{\"kind\":\"fact\",\"fact\":\"name\",\"seq\":2,\"name\":\"lost\"}}"
+        );
+        fs.write_file("/sessions/torn-array.jsonl", &format!("{prefix}{torn}"))
+            .unwrap();
+
+        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/torn-array.jsonl")
+            .await
+            .unwrap();
+        // Nothing from the torn line was admitted.
+        assert_eq!(restored.get_name().await, None);
+        // Repair publishes the valid prefix plus its terminator.
+        assert_eq!(fs.content("/sessions/torn-array.jsonl").unwrap(), prefix);
+        assert!(!fs.exists("/sessions/torn-array.jsonl.tmp"));
+    });
+}
+
+/// Oracle follow-up: the unsupported pre-WP01 scalar record spelling is a
+/// terminated complete line, so it rejects with the line diagnostic and
+/// the file is left untouched.
+#[test]
+fn load_rejects_terminated_scalar_record_spelling_without_rewriting() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("scalar", "/work")).unwrap();
+        // Pre-WP01 scalar spelling: a bare JSON scalar, terminated.
+        let corrupted = format!("{header_line}\ntrue\n");
+        fs.write_file("/sessions/scalar.jsonl", &corrupted).unwrap();
+
+        let err = JsonlSessionStorage::load(fs.clone(), "/sessions/scalar.jsonl")
+            .await
+            .expect_err("terminated scalar record must reject");
+        assert!(
+            format!("{err:?}").contains('2'),
+            "error names line 2, got: {err:?}"
+        );
+        assert_eq!(fs.content("/sessions/scalar.jsonl").unwrap(), corrupted);
+        assert!(!fs.exists("/sessions/scalar.jsonl.tmp"));
+    });
+}
+
+/// Oracle follow-up: a complete terminated malformed final line rejects
+/// without rewriting (only an *unterminated* tail repairs).
+#[test]
+fn load_rejects_terminated_malformed_final_line_without_rewriting() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("bad-final", "/work")).unwrap();
+        let corrupted = format!("{header_line}\nnot-json\n");
+        fs.write_file("/sessions/bad-final.jsonl", &corrupted)
+            .unwrap();
+
+        let err = JsonlSessionStorage::load(fs.clone(), "/sessions/bad-final.jsonl")
+            .await
+            .expect_err("terminated malformed final line must reject");
+        assert!(
+            format!("{err:?}").contains('2'),
+            "error names line 2, got: {err:?}"
+        );
+        assert_eq!(fs.content("/sessions/bad-final.jsonl").unwrap(), corrupted);
+        assert!(!fs.exists("/sessions/bad-final.jsonl.tmp"));
+    });
+}
+
+/// Oracle follow-up: a terminated final line with invalid transaction
+/// framing rejects without rewriting.
+#[test]
+fn load_rejects_terminated_invalid_framing_without_rewriting() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("framing", "/work")).unwrap();
+        let corrupted = format!("{header_line}\n{{\"kind\":\"nope\",\"seq\":2}}\n");
+        fs.write_file("/sessions/framing.jsonl", &corrupted)
+            .unwrap();
+
+        let err = JsonlSessionStorage::load(fs.clone(), "/sessions/framing.jsonl")
+            .await
+            .expect_err("invalid framing must reject");
+        assert!(
+            format!("{err:?}").contains('2'),
+            "error names line 2, got: {err:?}"
+        );
+        assert_eq!(fs.content("/sessions/framing.jsonl").unwrap(), corrupted);
+        assert!(!fs.exists("/sessions/framing.jsonl.tmp"));
+    });
+}
+
+/// Oracle follow-up: an unterminated header refuses with the missing-header
+/// diagnostic.
+#[test]
+fn load_rejects_unterminated_header() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let full = serde_json::to_string(&header("torn-hdr", "/work")).unwrap();
+        let torn = &full[..full.len() - 4];
+        fs.write_file("/sessions/torn-hdr.jsonl", torn).unwrap();
+
+        let err = JsonlSessionStorage::load(fs.clone(), "/sessions/torn-hdr.jsonl")
+            .await
+            .expect_err("unterminated header must refuse");
+        // `LoadError::InvalidFile` Display renders the path with a
+        // `!` separator (`{path}!:{line}`), so match the tail wording.
+        let message = format!("{err}");
+        assert!(
+            message.contains("missing a header"),
+            "diagnostic names the missing header, got: {message}"
+        );
+    });
+}
+
 #[test]
 fn load_rejects_malformed_interior_line_without_rewriting() {
     let rt = tokio::runtime::Builder::new_current_thread()

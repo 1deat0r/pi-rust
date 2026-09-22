@@ -2,15 +2,29 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice W — import pins + fork assessment (uncommitted)
+### Session slice X — torn-tail discriminator fix (uncommitted)
+
+Closes slice V's 5-case follow-up (7/7 oracle torn-tail suite now
+pinned): genuine bug fix, TDD RED 2/5 — `load` repaired on error
+kind (`Syntax` final line) instead of the oracle's terminator
+property, so terminated malformed final lines were truncated not
+rejected, and torn headers misdiagnosed. Fix: `split_text_lines`
+termination-preserving split; repair iff final line unterminated;
+torn first line refuses as missing header. jsonl_storage 15/15,
+pi-agent lib 276/276, 17/17 suites green, session-backends green,
+fmt clean, clippy pre-existing only, conversion 100.00%
+(166/166). No row promoted; metrics unchanged (58/318). Next:
+commit + push, then continue the sweep.
+
+### Session slice W — import pins + fork assessment (committed + pushed)
 
 Two SES-012 refusal pins green (genuine RED: copy-then-open
 confirmed vs oracle). SES-010 assessed-not-portable (no
 branch-name surface). New target 2/2, lib 918/918, fmt/diff
 clean, conversion 100.00% (166/166). Jev: stop done 0.64,
 guardrail safe 0.54 (verified noise). No row promoted; metrics
-unchanged (58/318). Next: commit + push, then continue the
-sweep.
+unchanged (58/318). Committed `b1ffc3a`, pushed, hashes match.
+Next: commit + push slice X, then continue the sweep.
 
 ### Session slice V — torn-tail pins committed + pushed
 

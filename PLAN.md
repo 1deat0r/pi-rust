@@ -7,6 +7,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice X — torn-tail discriminator fix + 5 remaining pins
+
+Closes slice V's 5-case follow-up with a genuine bug fix (TDD RED
+2/5): `load` keyed torn-tail repair on error kind instead of the
+oracle's terminator property. Now termination-preserving via the
+pre-existing `split_text_lines` port — final line repairs iff
+unterminated, terminated lines always reject, torn first line
+refuses as missing header. Five pins complete the 7-case oracle
+suite. No row promoted (session slice). Gate green:
+jsonl_storage 15/15, pi-agent lib 276/276 + 17/17 suites,
+session-backends green, fmt, clippy pre-existing only,
+conversion 100.00% (166/166). Next: commit + push, then continue
+the parity sweep.
+
 ### Session slice W — import refusal pins + fork assessment
 
 Two SES-012 pins (missing-file, invalid-header), genuine RED

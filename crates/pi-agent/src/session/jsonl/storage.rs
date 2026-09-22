@@ -10,6 +10,7 @@ use super::errors::{file_result, JsonlDecodeError, JsonlDecodeErrorKind};
 use super::v3;
 use super::{encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation};
 use crate::fs::FileSystem;
+use crate::harness::text_lines::split_text_lines;
 use crate::types::FileError;
 
 fn now_ms() -> u64 {
@@ -115,12 +116,11 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             &format!("Failed to read session {path}"),
         )
         .map_err(LoadError::Io)?;
-        let physical_lines: Vec<&str> = content.split('\n').collect();
-        let mut physical_lines: Vec<&str> = physical_lines.into_iter().collect();
-        if physical_lines.last().copied() == Some("") {
-            physical_lines.pop();
-        }
-        if physical_lines.is_empty() || physical_lines[0].is_empty() {
+        // Termination-preserving split (port of `splitCompleteLines`):
+        // only a final line *without* `\n` may be a torn tail. A complete
+        // terminated line that fails to parse always rejects.
+        let text_lines = split_text_lines(&content);
+        if text_lines.is_empty() || text_lines[0].text.is_empty() {
             return Err(LoadError::InvalidFile {
                 path: path.to_string(),
                 line: 1,
@@ -128,11 +128,23 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                 message: "is missing a header".to_string(),
             });
         }
-        let (header, format) = match parse_header(physical_lines[0]) {
+        let (header, format) = match parse_header(&text_lines[0].text) {
             Ok(header) => (header, SessionFileFormat::V4),
-            Err(v4_error) => match v3::parse_header(physical_lines[0]) {
+            Err(v4_error) => match v3::parse_header(&text_lines[0].text) {
                 Ok(header) => (header, SessionFileFormat::V3),
-                Err(_) => return Err(invalid_file(path, 1, v4_error)),
+                Err(_) => {
+                    // Oracle parity (`readJsonlHeader`): an unterminated
+                    // first line is a torn header, refused as missing.
+                    if !text_lines[0].terminated {
+                        return Err(LoadError::InvalidFile {
+                            path: path.to_string(),
+                            line: 1,
+                            kind: JsonlDecodeErrorKind::Schema,
+                            message: "is missing a header".to_string(),
+                        });
+                    }
+                    return Err(invalid_file(path, 1, v4_error));
+                }
             },
         };
         let file_info = file_result(
@@ -154,7 +166,8 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         };
         let mut torn_tail_repaired = false;
         let mut legacy_seq = 0u64;
-        for (index, line) in physical_lines.iter().enumerate().skip(1) {
+        let line_texts: Vec<&str> = text_lines.iter().map(|l| l.text.as_str()).collect();
+        for (index, line) in line_texts.iter().enumerate().skip(1) {
             if format == SessionFileFormat::V3 && line.trim().is_empty() {
                 continue;
             }
@@ -168,11 +181,15 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             } {
                 Ok(m) => m,
                 Err(e) => {
+                    // Oracle parity: a torn tail is a *terminator* property,
+                    // never an error-kind property. The final line repairs
+                    // only when it lacks `\n`, whatever the parse failure;
+                    // a terminated line always rejects with its line number.
                     let is_torn_tail =
-                        index == physical_lines.len() - 1 && e.kind == JsonlDecodeErrorKind::Syntax;
+                        index == line_texts.len() - 1 && !text_lines[index].terminated;
                     if is_torn_tail {
                         torn_tail_repaired = true;
-                        let valid_prefix = format!("{}\n", physical_lines[..index].join("\n"));
+                        let valid_prefix = format!("{}\n", line_texts[..index].join("\n"));
                         publish_file_atomically(&storage.fs, path, |fs, temp| {
                             file_result(
                                 fs.write_file(temp, &valid_prefix),

@@ -2,6 +2,36 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice X: torn-tail discriminator fix + 5 remaining pins (last updated 2026-09-22)
+
+Slice X (closes slice V's 5-case follow-up; genuine bug fix, TDD
+RED 2/5 on first run): the `JsonlSessionStorage::load` torn-tail
+discriminator keyed repair on error *kind* (`Syntax` on the final
+line) instead of the oracle's terminator property
+(`splitCompleteLines`: only a final line *without* `\n` may be
+torn). Two oracle cases proved the gap — a *terminated* malformed
+final line was silently truncated instead of rejecting with
+`line 2`, and an *unterminated* schema-invalid header surfaced the
+wrong diagnostic. Fix in `crates/pi-agent/src/session/jsonl/
+storage.rs`: termination-preserving `split_text_lines` split (the
+pre-existing `harness::text_lines` port of `TextLine`),
+final-line repair iff unterminated whatever the parse failure,
+terminated lines always reject with their line number, and an
+unterminated unparsable first line refuses as `missing header`
+(per oracle `readJsonlHeader`). Five new pins in
+`crates/pi-agent/tests/jsonl_storage.rs` cover the full 7-case
+oracle suite alongside slice V's 2 (torn-array discard wholly +
+truncation, terminated scalar spelling, terminated malformed
+final, terminated invalid framing, unterminated header). Gate:
+jsonl_storage 15/15, pi-agent lib 276/276, pi-agent tests 17/17
+suites green, session-backends green, fmt clean, pi-agent clippy
+only pre-existing findings (module_inception + header_end,
+unchanged on this tree), conversion 100.00% (166/166). No parity
+row promoted (session-lane deterministic slice). Metrics
+unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Session slice W: import refusal pins + fork assessment (last updated 2026-09-22)
 
 Slice W: two SES-012 invalid-import pins in the new
