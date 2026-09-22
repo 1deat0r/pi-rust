@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice X — torn-tail discriminator fix (uncommitted)
+### Session slice X — torn-tail discriminator fix (committed + pushed)
 
 Closes slice V's 5-case follow-up (7/7 oracle torn-tail suite now
 pinned): genuine bug fix, TDD RED 2/5 — `load` repaired on error
