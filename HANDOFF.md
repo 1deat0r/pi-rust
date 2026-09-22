@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AA — continueRecent fresh-fallback + CLI-012 correction (uncommitted)
+### Session slice AA — continueRecent fresh-fallback + CLI-012 correction (committed + pushed)
 
 Honesty correction + behavior port (RED 2/2): `--continue`
 fail-closed was a Rust invention — provenance `711a25e` (early
@@ -21,8 +21,8 @@ unchanged (58/318). Gates: restart 13/13, flag 7/7, clean_home
 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime 3/3,
 extensions 10/10, file safety 2/2, import 2/2,
 session_file_invalid 4/4, lib 918/918, fmt, clippy 0 errors,
-diff clean, conversion 100.00% (166/166). Next: commit + push,
-then continue the sweep.
+diff clean, conversion 100.00% (166/166). Committed `2eeafff`,
+pushed, hashes match. Next: continue the sweep.
 
 ### Session slice Z — open-init vs Cannot-fork by intent (committed + pushed)
 
