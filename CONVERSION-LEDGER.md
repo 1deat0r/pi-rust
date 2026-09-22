@@ -2,6 +2,53 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AA: continueRecent fresh-fallback port + CLI-012 note correction (last updated 2026-09-22)
+
+Slice AA (honesty correction + behavior port; genuine TDD RED
+2/2): `--continue` with no valid session used to fail closed with
+`no previous session found to continue in this directory` — a
+message that exists NOWHERE in the pinned oracle (source or
+tests, verified by grep). Provenance: the behavior was introduced
+by the early routing commit `711a25e` (2026-08-24) and promoted
+to CLI-012 PASS in `25a3b24` (2026-09-05) with an unverified
+claim of "matching upstream discovery-skip" — the discovery-skip
+half is true (`findMostRecentSession` skips unreadable headers),
+but the fail-closed half is false: oracle
+`SessionManager.continueRecent` returns
+`new SessionManager(cwd, dir, undefined, true)` on null — a
+SILENT FRESH SESSION (file materializes on first append) — and
+`getDefaultSessionDirPath` embeds the cwd, so wrong-cwd discovery
+sees an empty dir and falls back the same way. Ported the null →
+fresh contract at all three startup sites: `run.rs` prepare
+(print + JSON share it; continue-empty now yields `source = None`
+→ the normal create path; `--resume` empty keeps its CLI-013
+fail-closed contract), `interactive.rs` (fresh arm mirrors the
+plain-start create; no `continued session` banner on fallback),
+`rpc.rs` (same match structure). The extension
+`session_before_switch` hook correctly does not fire on fallback
+(no source = no switch). Rewrote the oracle-faithful process
+evidence: `continue_variants_...` split into wrong-cwd/no-session
+(asserts success + fresh-file counts + no fail-closed text; RED
+against the old diagnostic) and a new
+`continue_skips_malformed_header_and_recovers_after_byte_restore`
+(asserts discovery-skip → fresh beside the corrupt file, then
+byte-restore becomes the newest valid candidate and appends
+verified content). CLI-012 row note corrected in place (the
+false "matching upstream" claim replaced with the actual oracle
+contract); row stays PASS/PASS/PASS — all Required boundaries are
+still proven, now with truthful attribution. Historical ledger
+entries quoting the old message are append-only history and are
+superseded by this entry. Gate: cli_session_restart_parity 13/13
+(was 12; one test split), flag matrix 7/7, clean_home 12/12,
+print 14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions
+10/10, file safety 2/2, import 2/2, session_file_invalid 4/4,
+coding-agent lib 918/918, fmt clean, clippy all-targets 0 errors
+(warnings pre-existing only), diff clean, conversion 100.00%
+(166/166). No parity row promoted or demoted (CLI-012 evidence
+corrected; metrics unchanged: implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Session slice Z: empty/invalid source by intent — open-init vs Cannot-fork (last updated 2026-09-22)
 
 Slice Z (slice-Y follow-ups closed; oracle

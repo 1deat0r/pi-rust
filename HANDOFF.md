@@ -2,6 +2,28 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AA — continueRecent fresh-fallback + CLI-012 correction (uncommitted)
+
+Honesty correction + behavior port (RED 2/2): `--continue`
+fail-closed was a Rust invention — provenance `711a25e` (early
+routing) → `25a3b24` (PASS with unverified oracle claim); oracle
+`continueRecent` null → SILENT FRESH SESSION (verified: zero
+"no previous session" occurrences in oracle source/tests; default
+session dir is per-cwd, explaining wrong-cwd misses). Ported
+fresh-fallback at run.rs prepare (print+JSON), interactive.rs
+(fresh arm = plain-start create, no banner), rpc.rs; resume-empty
+keeps CLI-013 fail-closed; extension switch hook skipped on
+fallback (no source). Tests: continue variant split into
+wrong-cwd/no-session (success + fresh counts) + malformed/restore
+recovery (discovery-skip → fresh; restore = newest valid →
+append). CLI-012 note corrected in place; row stays PASS; metrics
+unchanged (58/318). Gates: restart 13/13, flag 7/7, clean_home
+12/12, print 14/14, json 9/9, exhaustive 6/6, runtime 3/3,
+extensions 10/10, file safety 2/2, import 2/2,
+session_file_invalid 4/4, lib 918/918, fmt, clippy 0 errors,
+diff clean, conversion 100.00% (166/166). Next: commit + push,
+then continue the sweep.
+
 ### Session slice Z — open-init vs Cannot-fork by intent (committed + pushed)
 
 Slice-Y follow-ups closed (oracle setSessionFile suite +

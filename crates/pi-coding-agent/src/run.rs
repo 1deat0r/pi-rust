@@ -1427,13 +1427,18 @@ async fn prepare_run_session_with_settings(
             .await
             .map_err(|error| format!("list sessions: {error}"))?;
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
-        Some(sessions.into_iter().next().ok_or_else(|| {
-            if args.resume {
-                "no sessions found to resume in this directory".to_string()
-            } else {
-                "no previous session found to continue in this directory".to_string()
+        match sessions.into_iter().next() {
+            Some(found) => Some(found),
+            // `--resume` keeps its fail-closed no-match contract (the
+            // interactive selector path); `--continue` mirrors upstream
+            // `SessionManager.continueRecent`: no valid session → a silent
+            // fresh session (handled by the create path below), never an
+            // error.
+            None if args.resume => {
+                return Err("no sessions found to resume in this directory".to_string());
             }
-        })?)
+            None => None,
+        }
     } else {
         None
     };

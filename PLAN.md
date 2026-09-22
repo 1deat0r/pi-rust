@@ -7,6 +7,24 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AA — continueRecent fresh-fallback port + CLI-012 note correction
+
+Closed the slice-Z follow-up as a behavior port + honesty fix
+(genuine RED 2/2): provenance showed `--continue` fail-closed was
+assumed in early routing (`711a25e`), promoted to PASS with an
+unverified oracle claim (`25a3b24`) — oracle `continueRecent`
+never fails (null → silent fresh session; per-cwd default dir
+explains wrong-cwd misses). Ported fresh-fallback at run
+(print+JSON)/interactive/rpc; resume-empty keeps fail-closed
+(CLI-013). Tests split to oracle-faithful assertions (success +
+fresh counts; malformed-skip + restore-recovers); CLI-012 note
+corrected in place, row stays PASS. Gate green: restart 13/13,
+flag 7/7, clean_home 12/12, print/json/exhaustive/runtime/
+extensions/file-safety/import/session_file_invalid green, lib
+918/918, clippy 0 errors, fmt, diff, conversion 100.00%
+(166/166). Metrics unchanged. Next: commit + push, then continue
+the parity sweep.
+
 ### Session slice Z — empty/invalid source by intent (open-init vs Cannot-fork)
 
 Closed slice-Y follow-ups with oracle `file-operations`

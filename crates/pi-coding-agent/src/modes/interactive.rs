@@ -6245,19 +6245,34 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             .await
             .map_err(|e| format!("list sessions: {e}"))?;
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
-        let source = sessions
-            .into_iter()
-            .next()
-            .ok_or_else(|| "no previous session found to continue in this directory".to_string())?;
-        let session = repo
-            .open(&source)
-            .await
-            .map_err(|e| format!("open session {}: {e}", source.id))?;
-        initial_status_banner = format!(
-            "continued session {}",
-            source.id.get(..8).unwrap_or(&source.id)
-        );
-        session
+        match sessions.into_iter().next() {
+            Some(source) => {
+                let session = repo
+                    .open(&source)
+                    .await
+                    .map_err(|e| format!("open session {}: {e}", source.id))?;
+                initial_status_banner = format!(
+                    "continued session {}",
+                    source.id.get(..8).unwrap_or(&source.id)
+                );
+                session
+            }
+            // Oracle `continueRecent`: no valid session → silent fresh
+            // session (same create path as a plain interactive start).
+            None => repo
+                .create(CreateOptions {
+                    id: args
+                        .session_id
+                        .clone()
+                        .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
+                    cwd: cwd.clone(),
+                    parent_session_id: None,
+                    metadata: None,
+                    fork_options: ForkOptions::Tree,
+                })
+                .await
+                .map_err(|e| format!("create session: {e}"))?,
+        }
     } else if let Some(session_id) = args.session_id.as_deref() {
         if let Some(source) = crate::run::find_local_session_by_id(&repo, &cwd, session_id).await? {
             let session = repo

@@ -269,6 +269,13 @@ fn clean_child_restart_honors_session_dir_precedence_and_reopens_file() {
 }
 #[test]
 fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
+    // Oracle `SessionManager.continueRecent` (session-manager.ts): discovery
+    // (`findMostRecentSession`) only considers `.jsonl` files with a valid
+    // session header under the per-cwd default session dir, newest mtime
+    // first; when nothing valid is found it silently returns a NEW
+    // SessionManager (fresh session — file materializes on first append).
+    // It never fails closed. Byte-restore recovery still works because the
+    // restored file becomes the newest valid candidate.
     let sandbox = Sandbox::new("continue-variants");
     let continue_args = [
         "--mode",
@@ -281,8 +288,9 @@ fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
         "--continue",
     ];
 
-    // Wrong cwd: the session belongs to another project, so lookup must
-    // miss and the run must fail with the no-previous-session diagnostic.
+    // Wrong cwd: the seeded project's session is invisible from another
+    // project (per-cwd session dir), so --continue starts a fresh session
+    // there instead of failing.
     let other_project = sandbox.root.join("other-project");
     fs::create_dir_all(&other_project).expect("create other project");
     let wrong_cwd = sandbox
@@ -294,17 +302,27 @@ fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
         .output()
         .expect("run wrong-cwd continue");
     assert!(
-        !wrong_cwd.status.success(),
-        "wrong-cwd continue must fail: {}",
+        wrong_cwd.status.success(),
+        "wrong-cwd continue must start a fresh session: {}",
         stderr(&wrong_cwd)
     );
     assert!(
-        stderr(&wrong_cwd).contains("no previous session found to continue in this directory"),
-        "expected no-previous-session diagnostic, got: {}",
+        stdout(&wrong_cwd).contains("faux response to: wrong cwd"),
+        "faux turn missing: {}",
+        stdout(&wrong_cwd)
+    );
+    assert!(
+        !stderr(&wrong_cwd).contains("no previous session found"),
+        "continue must not fail closed: {}",
         stderr(&wrong_cwd)
     );
+    assert_eq!(
+        jsonl_files(&sandbox.sessions).len(),
+        1,
+        "fresh session created for the other cwd"
+    );
 
-    // No session at all in the right cwd: same fail-closed diagnostic.
+    // No session at all in the right cwd: same fresh-fallback contract.
     let no_session = sandbox
         .command()
         .args(continue_args)
@@ -313,20 +331,41 @@ fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
         .output()
         .expect("run no-session continue");
     assert!(
-        !no_session.status.success(),
-        "no-session continue must fail: {}",
+        no_session.status.success(),
+        "no-session continue must start a fresh session: {}",
         stderr(&no_session)
     );
     assert!(
-        stderr(&no_session).contains("no previous session found to continue in this directory"),
-        "expected no-previous-session diagnostic, got: {}",
-        stderr(&no_session)
+        stdout(&no_session).contains("faux response to: no session"),
+        "faux turn missing: {}",
+        stdout(&no_session)
     );
+    assert_eq!(
+        jsonl_files(&sandbox.sessions).len(),
+        2,
+        "fresh session created for the empty cwd"
+    );
+}
 
-    // Seed a real session, then corrupt it to a malformed header. Discovery
-    // skips unreadable headers (upstream readSessionHeaderForDiscovery),
-    // so --continue must keep failing closed with the same diagnostic
-    // instead of opening a broken file.
+#[test]
+fn continue_skips_malformed_header_and_recovers_after_byte_restore() {
+    // Malformed-only state: discovery skips the unreadable header (oracle
+    // `readSessionHeaderForDiscovery`), finds nothing valid, and falls
+    // back to a fresh session. Restoring the original bytes afterwards
+    // makes it the newest valid candidate, so the next --continue appends
+    // to it again.
+    let sandbox = Sandbox::new("continue-malformed");
+    let continue_args = [
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--continue",
+    ];
+
     let seed = sandbox
         .command()
         .args([
@@ -359,17 +398,24 @@ fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
         .output()
         .expect("run malformed continue");
     assert!(
-        !malformed.status.success(),
-        "malformed continue must fail: {}",
+        malformed.status.success(),
+        "malformed-only continue must start a fresh session: {}",
         stderr(&malformed)
     );
     assert!(
-        stderr(&malformed).contains("no previous session found to continue in this directory"),
-        "expected no-previous-session diagnostic, got: {}",
-        stderr(&malformed)
+        stdout(&malformed).contains("faux response to: malformed"),
+        "faux turn missing: {}",
+        stdout(&malformed)
+    );
+    assert_eq!(
+        jsonl_files(&sandbox.sessions).len(),
+        2,
+        "fresh session created alongside the skipped corrupt file"
     );
 
-    // Recovery: restoring the bytes makes --continue work again and append.
+    // Recovery: restoring the bytes (newest mtime) makes --continue pick
+    // the original again and append verified content.
+    std::thread::sleep(Duration::from_millis(20));
     fs::write(&session_file, original).expect("restore session file");
     let recovered = sandbox
         .command()

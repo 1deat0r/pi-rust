@@ -1275,16 +1275,31 @@ impl RpcRuntime {
                 .await
                 .map_err(|e| format!("list sessions: {e}"))?;
             sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
-            let source = sessions.into_iter().next().ok_or_else(|| {
-                if args.resume {
-                    "no sessions found to resume in this directory".to_string()
-                } else {
-                    "no previous session found to continue in this directory".to_string()
+            match sessions.into_iter().next() {
+                Some(source) => repo
+                    .open(&source)
+                    .await
+                    .map_err(|e| format!("open session {}: {e}", source.id))?,
+                // `--resume` keeps its no-match fail-closed contract; the
+                // `--continue` half mirrors oracle `continueRecent`
+                // (no valid session → silent fresh session).
+                None if args.resume => {
+                    return Err("no sessions found to resume in this directory".to_string());
                 }
-            })?;
-            repo.open(&source)
-                .await
-                .map_err(|e| format!("open session {}: {e}", source.id))?
+                None => repo
+                    .create(CreateOptions {
+                        id: args
+                            .session_id
+                            .clone()
+                            .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
+                        cwd: cwd.clone(),
+                        parent_session_id: None,
+                        metadata: None,
+                        fork_options: ForkOptions::Tree,
+                    })
+                    .await
+                    .map_err(|e| format!("create session: {e}"))?,
+            }
         } else {
             repo.create(CreateOptions {
                 id: args
