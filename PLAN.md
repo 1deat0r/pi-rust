@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice V — torn-tail repair continuity pins
+
+Two oracle torn-tail cases pinned (repair-then-append seq
+continuity, interior-line rejection), green first run,
+evidence-only. Theme_state lane investigated first: no
+reproducible defect, pivoted per Jev re-route (0.96). Jev
+pushback (not_done 0.71) honored via 7-case coverage map;
+remainder is follow-up. No row promoted (session slice). Gate
+green: jsonl_storage 10/10, pi-agent 429, sb 89, fmt, diff,
+conversion 100.00% (166/166). Next: commit + push, then the
+remaining torn-tail variants.
+
 ### Flake-hunt slice U — parallel-load test stabilization
 
 Fixed three load-dependent flake sources with no behavior

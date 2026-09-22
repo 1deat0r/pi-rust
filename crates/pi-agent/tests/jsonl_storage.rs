@@ -856,3 +856,89 @@ fn reopens_interleaved_model_thinking_tools_and_replays_latest_state() {
         assert_eq!(context.messages[0].role(), "user");
     });
 }
+
+#[test]
+fn load_repairs_torn_tail_then_admits_writes_with_seq_continuity() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut content = format!(
+            "{}\n{}",
+            serde_json::to_string(&header("kept", "/work")).unwrap(),
+            serde_json::to_string(&pi_agent::session::types::Mutation::Entry {
+                lane: Some("main".into()),
+                entry: Entry::Custom {
+                    id: "kept".into(),
+                    seq: 1,
+                    parent_id: None,
+                    timestamp: 1,
+                    custom_type: "note".into(),
+                    data: None,
+                },
+            })
+            .unwrap(),
+        );
+        content.push_str("\n{\"kind\":\"entry\",\"torn");
+        fs.write_file("/sessions/repair.jsonl", &content).unwrap();
+
+        let mut restored = JsonlSessionStorage::load(fs.clone(), "/sessions/repair.jsonl")
+            .await
+            .unwrap();
+        // Torn tail discarded; repair publishes a full file (no .tmp left).
+        assert!(!fs.exists("/sessions/repair.jsonl.tmp"));
+        // Post-repair writes continue the sequence (oracle: firstSeq 2).
+        let entry = restored
+            .append_entry(enter_message("after", "after", 2), "main")
+            .await
+            .unwrap();
+        assert_eq!(entry.seq(), 2);
+        let entries = restored
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.windows(2).all(|pair| pair[0].seq() < pair[1].seq()));
+    });
+}
+
+#[test]
+fn load_rejects_malformed_interior_line_without_rewriting() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("corrupt", "/work")).unwrap();
+        let entry_line = serde_json::to_string(&pi_agent::session::types::Mutation::Entry {
+            lane: Some("main".into()),
+            entry: Entry::Custom {
+                id: "after".into(),
+                seq: 2,
+                parent_id: None,
+                timestamp: 2,
+                custom_type: "note".into(),
+                data: None,
+            },
+        })
+        .unwrap();
+        let corrupted = format!("{header_line}\nnot-json\n{entry_line}\n");
+        fs.write_file("/sessions/corrupt.jsonl", &corrupted)
+            .unwrap();
+
+        let err = JsonlSessionStorage::load(fs.clone(), "/sessions/corrupt.jsonl")
+            .await
+            .expect_err("malformed interior line must reject");
+        let message = format!("{err:?}");
+        assert!(message.contains('2'), "error names line 2, got: {message}");
+        // File untouched: no truncation, no .tmp staged.
+        assert_eq!(fs.content("/sessions/corrupt.jsonl").unwrap(), corrupted);
+        assert!(!fs.exists("/sessions/corrupt.jsonl.tmp"));
+    });
+}

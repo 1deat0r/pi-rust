@@ -2,15 +2,26 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Flake-hunt slice U — test stabilization (uncommitted)
+### Session slice V — torn-tail pins (uncommitted)
+
+Two oracle torn-tail cases pinned, green first run
+(evidence-only). jsonl_storage 10/10, pi-agent 429, sb 89,
+fmt/diff clean, conversion 100.00% (166/166). Theme lane
+checked first: no reproducible defect (pivot recorded). Jev
+pushback honored via coverage map (2/7 done, rest follow-up).
+No row promoted; metrics unchanged (58/318). Next: commit +
+push, then the remaining torn-tail variants.
+
+### Flake-hunt slice U — test stabilization committed + pushed
 
 No behavior change: session_env env lock, synchronous watcher
 baseline, tokio registry lock + 3 guarded interferers. Lib
 918/918 x3 (was 916/2 flaky), pi-ai 487, agent 276, sb 89,
 fmt/diff clean, conversion 100.00% (166/166). Jev: route
 flake_hunt 0.59, stop done 0.91, guardrail safe 0.70. No row
-promoted; metrics unchanged (58/318). Next: commit + push,
-then continue the sweep.
+promoted; metrics unchanged (58/318). Committed `ccc29c9`,
+pushed, hashes match. Next: commit + push slice V, then continue
+the sweep.
 
 ### Extension slice T — ignore-pin hermeticity committed + pushed
 

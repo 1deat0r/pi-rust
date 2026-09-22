@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice V: torn-tail repair continuity pins (last updated 2026-09-22)
+
+Slice V (oracle `jsonl-storage.test.ts` "torn tail" suite, 7
+cases, Rust pinned 2): two new pins, green first run
+(evidence-only — the load path already implements both).
+`load_repairs_torn_tail_then_admits_writes_with_seq_continuity`
+(post-repair append continues seq, no `.tmp` left) and
+`load_rejects_malformed_interior_line_without_rewriting` (line-2
+diagnostic, file byte-identical). Slice routed by live Jev
+re-route (`session_wave` 0.96, conf 0.91) after the theme_state
+lane proved defect-free (1-in-5 transient, green solo + 6/7
+full-lib; no manufactured fix). Jev stop-hook `not_done` 0.71
+and guardrail `risky` 0.56 honored by mapping all 7 oracle cases
+and scoping honestly: torn-array-line, pre-WP01 scalar, malformed
+final-line, invalid framing, and unterminated-header variants
+remain follow-up units. Gate: jsonl_storage 10/10, pi-agent
+429/429, session-backends 89/89, fmt clean, diff clean, pi-agent
+lib clippy module_inception pre-existing on clean HEAD,
+conversion 100.00% (166/166). No parity row promoted
+(session-lane deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Flake-hunt slice U: parallel-load test stabilization (last updated 2026-09-22)
 
 Slice U (fixes load-dependent flakes, no behavior change):
