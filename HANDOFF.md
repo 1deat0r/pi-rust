@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice Z — open-init vs Cannot-fork by intent (uncommitted)
+### Session slice Z — open-init vs Cannot-fork by intent (committed + pushed)
 
 Slice-Y follow-ups closed (oracle setSessionFile suite +
 `forkFrom`; genuine RED 3/3): `SessionFileIntent { Open, Fork }`
@@ -22,8 +22,8 @@ file safety 2/2, print 14/14, json 9/9, exhaustive 6/6, runtime
 3/3, extensions 10/10, export 1/1, lib 918/918, fmt, clippy 0
 errors (warnings pre-existing), diff clean, conversion 100.00%
 (166/166). No row promoted (CLI-014 + CLI-016 notes extended);
-metrics unchanged (58/318). Next: commit + push, then continue
-the sweep.
+metrics unchanged (58/318). Committed `3419a81`, pushed, hashes
+match. Next: continue the sweep.
 
 ### Session slice Y — invalid-session diagnostic + ordering (committed + pushed)
 
