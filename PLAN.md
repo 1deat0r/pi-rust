@@ -20,7 +20,7 @@ inherits), and added `scripts/size-gate.sh` (600KB tracked-file cap,
 promoted; metrics unchanged (111/107/59/58/58, conversion 100.00%
 (166/166)). Gate green: size-gate + neg, clippy 0, fmt, diff,
 docs-lint 0, all package/integration suites listed in the ledger.
-Next: commit + push, then continue the parity sweep.
+Committed `3ea8b40` + pushed. Next: continue the parity sweep.
 
 ### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration
 

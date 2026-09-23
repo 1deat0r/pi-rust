@@ -4,6 +4,11 @@
 
 ### Session slice AI — workspace size-bloat cleanup + size-gate pre-commit (committed + pushed)
 
+Committed `3ea8b40`, pushed, hashes match. Metrics unchanged
+(implementation 111/266, evidence 107/266, runtime 59/266,
+non-TUI 58/266, whole-product 58/318). `Conversion progress:
+100.00% (166/166; 0 open)`.
+
 Disk fix + prevention: pre-state `target/` ~50G (deps 37G of ~400MB
 test bins, incremental 13G, 136 files >100MB / 34.7GB). Actions:
 `rm -rf target/debug/incremental` + `cargo clean` (37.1GiB);
