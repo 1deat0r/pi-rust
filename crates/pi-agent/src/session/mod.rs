@@ -5,6 +5,9 @@ pub mod context;
 pub mod jsonl;
 pub mod memory;
 
+// Mirrors the upstream `harness/session/session.ts` layout: the nested
+// name is deliberate path parity, not accidental self-shadowing.
+#[allow(clippy::module_inception)]
 pub mod session;
 pub mod state;
 pub mod types;

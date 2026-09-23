@@ -88,7 +88,7 @@ fn stdout(output: &Output) -> String {
 }
 
 /// Read the first line of a session file as JSON and return its id.
-fn header_id(path: &PathBuf) -> String {
+fn header_id(path: &std::path::Path) -> String {
     let content = fs::read_to_string(path).expect("read session header");
     let first = content.lines().next().expect("session header line");
     let value: serde_json::Value = serde_json::from_str(first).expect("session header JSON");

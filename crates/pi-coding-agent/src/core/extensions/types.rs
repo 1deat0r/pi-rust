@@ -1794,11 +1794,14 @@ impl UiPromptKind {
 #[derive(Clone)]
 pub struct UiPromptEmitter {
     depth: Arc<Mutex<usize>>,
-    active: Arc<Mutex<Option<(String, Option<String>)>>>,
+    active: Arc<Mutex<Option<ActivePrompt>>>,
     // Arc breaks the Context -> UiContext -> Emitter -> Context cycle.
     context: Arc<ExtensionContext>,
     handlers: Arc<Vec<HandlerFn>>,
 }
+
+/// The currently open nested prompt: dialog kind plus optional title.
+type ActivePrompt = (String, Option<String>);
 
 impl std::fmt::Debug for UiPromptEmitter {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

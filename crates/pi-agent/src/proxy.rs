@@ -1264,16 +1264,13 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
             let mut request = vec![0u8; 4096];
-            let mut header_end = 0;
-            while header_end == 0 {
+            // Drain chunks until the header terminator arrives (or EOF);
+            // the byte offset itself is never needed after detection.
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
                 let n = tokio::io::AsyncReadExt::read(&mut socket, &mut request)
                     .await
                     .expect("read request");
                 if n == 0 {
-                    break;
-                }
-                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                    header_end = end + 4;
                     break;
                 }
             }

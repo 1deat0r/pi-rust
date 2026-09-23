@@ -18,10 +18,14 @@ this section is archived in `docs/PARITY-DASHBOARD.md`.
 
 <!-- README_STATUS:START (machine-checked; keep in sync with the audits) -->
 
-Library suites (2026-09-17, offline): pi-ai 484, pi-tui 409, pi-agent 276
-(pi-coding-agent lib has 29 pre-existing failures, verified identical on
-clean HEAD — see HANDOFF.md). The embedded catalog holds 1,351 models
-(runtime provider overlays can report more). Row-complete JSON, TUI
+Library suites (2026-09-22, offline): pi-ai 487, pi-tui 409, pi-agent 276,
+pi-coding-agent 918 — every suite green. `pi-agent`, `pi-tui`, and
+`pi-coding-agent` are also all-target clippy-clean (zero warnings since the
+2026-09-22 hygiene pass retired the former dead-code, module-inception,
+header-end, unused-import, and type-complexity findings; the earlier
+"29 pre-existing failures" note is obsolete). The embedded catalog holds
+1,357 models across 41 providers (runtime provider overlays can report
+more). Row-complete JSON, TUI
 visual, live-provider, platform, and recovery boundaries remain open;
 this is strong package evidence, not a 100% parity claim.
 

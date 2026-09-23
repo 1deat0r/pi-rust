@@ -10313,7 +10313,6 @@ mod tests {
     fn terminal_capability_overrides_reach_capability_cache() {
         // 0.85.1 upstream: settings `terminal` overrides flow into
         // capability resolution. RED: no wiring exists.
-        use crate::core::settings::SettingsMap;
         let settings = SettingsManager::in_memory(
             serde_json::from_value(serde_json::json!({
                 "terminal": { "images": false, "trueColor": true }

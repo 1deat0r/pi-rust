@@ -7,6 +7,27 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AB — session-id read-only pin + chronic-warning cleanup
+
+Ported oracle `session-id-readonly` case 1 (evidence-only, green
+first): `--session-id X --help` persists zero session files.
+Cases 2–3 already covered (empty-stderr reopen; in-process
+fork-conflict pin matching the oracle's in-process test). Hygiene
+(user-requested amateur-code pass): fixed the five chronic
+"pre-existing" warnings — proxy `header_end` sentinel (never
+read → terminator-scan loop), pi-tui parity getter allow,
+`session::session` path-parity allow, vestigial SettingsMap
+import, `ActivePrompt` type alias — plus `&PathBuf`→`&Path`.
+Clippy all-targets now ZERO warnings for pi-agent/pi-tui/
+pi-coding-agent. README status block corrected (stale 29-failure
+claim, 2026-09-17 counts → current 487/409/276/918, catalog
+1,357/41). Gate green: session_id_readonly 1/1, session_file_
+invalid 4/4, restart 13/13, extensions 10/10, agent 276 +
+proxy 13, tui 409, coding-agent 918, pi-ai 487, sb 13 suites,
+clippy 0 warnings, fmt, diff, docs-lint, conversion 100.00%
+(166/166). Metrics unchanged. Next: commit + push, then
+continue the parity sweep.
+
 ### Session slice AA — continueRecent fresh-fallback port + CLI-012 note correction
 
 Closed the slice-Z follow-up as a behavior port + honesty fix

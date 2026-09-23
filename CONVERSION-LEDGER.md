@@ -2,6 +2,47 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AB: session-id read-only pin + chronic-warning cleanup (last updated 2026-09-22)
+
+Slice AB (evidence-only pin + requested amateur-code hygiene):
+ported oracle `session-id-readonly.test.ts` case 1 — a new
+`session_id_readonly` process pin proves `--session-id
+read-only-help --help` exits 0, prints help, keeps stderr empty,
+and persists ZERO session files (no header anywhere may carry the
+requested id): metadata commands never materialize a durable
+file. Green first run (evidence-only — `ParseOutcome::Help`
+short-circuits before any session handling). Oracle cases 2–3
+were already covered (reopen-without-warning by the restart
+suite's empty-stderr assertion; fork-existing-target by the
+in-process `run::tests` fork-conflict pin — the oracle itself
+tests that case in-process). Hygiene fixes for the chronic
+warnings every prior gate cited as "pre-existing on clean HEAD"
+(now eliminated): (1) proxy test `header_end` sentinel
+misuse — the computed `end + 4` was never read; rewritten as a
+terminator scan loop (semantics identical, EOF path preserved);
+(2) pi-tui `is_scrollbar_active` — upstream-parity getter used
+only by tests, documented `#[allow(dead_code)]`; (3)
+`session::session` module-inception — deliberate upstream
+`harness/session/session.ts` path parity, documented allow;
+(4) vestigial `use SettingsMap` in the interactive
+capability-override test (unused since its RED); (5)
+`UiPromptEmitter::active` anonymous tuple factored into a named
+`ActivePrompt` type alias; (6) test helper `header_id(&PathBuf)`
+→ `&Path`. Result: `cargo clippy --all-targets` reports ZERO
+warnings for pi-agent, pi-tui, and pi-coding-agent (was 2 + 1 +
+2). README status block corrected (stale "29 pre-existing
+failures" claim and 2026-09-17 counts → current: pi-ai 487,
+tui 409, agent 276, coding-agent 918, catalog 1,357 models / 41
+providers). Gate: session_id_readonly 1/1, session_file_invalid
+4/4, restart 13/13, extensions 10/10, pi-agent lib 276/276 +
+proxy 13/13, pi-tui lib 409/409, pi-coding-agent lib 918/918,
+pi-ai lib 487/487, session-backends 13 suites, clippy
+all-targets 0 warnings (3 crates), fmt clean, diff clean,
+docs-lint 0 issues, conversion 100.00% (166/166). No parity row
+promoted (CLI-015 note extended; already PASS). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Session slice AA: continueRecent fresh-fallback port + CLI-012 note correction (last updated 2026-09-22)
 
 Slice AA (honesty correction + behavior port; genuine TDD RED

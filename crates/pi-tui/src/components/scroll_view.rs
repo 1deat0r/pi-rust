@@ -187,7 +187,9 @@ impl ScrollState {
     }
 
     /// Whether transient scrollbar activity is currently visible
-    /// (upstream 0.85.1 `isScrollbarActive` getter).
+    /// (upstream 0.85.1 `isScrollbarActive` getter). Parity surface:
+    /// exercised by this crate's tests, no in-tree production caller yet.
+    #[allow(dead_code)]
     pub fn is_scrollbar_active(&self) -> bool {
         self.model
             .lock()
