@@ -4,6 +4,11 @@
 
 ### Session slice AJ — docs checkpoint helper + post-commit always-push (checkpoint 2026-09-23)
 
+Docs commit `11e42fe` + impl commit `23a8d56`, both auto-pushed by
+post-commit, hashes match origin/main, no PUSH_BLOCKED. Use
+`bash scripts/checkpoint.sh` for future slice bodies; read this top
+section only at startup.
+
 Workflow infrastructure (not a parity-row change): the agent-driven docs system required hand-editing three multi-hundred-line files with duplicated gate lists, and the pre-commit bundle forced a non-TUI register stage even for Cargo.toml/profile edits. Human remains the prompter; agent owns gates, docs, and push. Fixes: (1) `.githooks/post-commit` pushes every normal commit immediately and verifies `git rev-parse HEAD` == `git ls-remote origin refs/heads/<branch>`; failure keeps the local commit and writes `.git/PUSH_BLOCKED` (never claim sync while that file exists; `PI_SKIP_PUSH=1` is the emergency escape). Skips rebase/am/merge intermediates. (2) `scripts/checkpoint.sh` writes one body into CONVERSION-LEDGER + PLAN + HANDOFF, runs size-gate + docs-lint, stages, commits; post-commit auto-pushes and the script re-verifies hashes (`--dry-run`, `--register-note`, `--no-commit`, `--progress` supported). (3) pre-commit: `crates/*` still forces the full trio + register; `Cargo.toml`/lint/toolchain now force only the trio (register only when product source or a register file is staged). (4) `AGENTS.md` rewritten as a thin prompter/agent protocol: HANDOFF top-only startup, checkpoint.sh as the end-of-task path, explicit PUSH_BLOCKED rule. Gates: GATES-SLICE-AJ.md G1–G7 (size-gate OK, docs-lint 0 issues, fmt clean, conversion 100.00% (166/166; 0 open), checkpoint --dry-run exit 0). No parity row promoted; metrics unchanged (111/107/59/58/58). Next: continue the parity sweep; always use checkpoint.sh for slice docs.
 
 Conversion progress: 100.00% (166/166; 0 open).
