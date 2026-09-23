@@ -23,9 +23,8 @@ invalid 12/12, lib 918, restart 13/13, resources 11/11, flag 7/7,
 clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime
 3/3, extensions 10/10, file safety 2/2, session_id 1/1, export
 1/1, sb 13 suites, clippy 0, fmt, diff, conversion 100.00% (166/166).
-Next: commit + push, then continue the parity sweep.
-
-### Session slice AF — bad-timestamp / missing-cwd acceptance pins
+Next: commit + push, then continue the parity sweep (slice AG
+committed `e8f275f` + pushed).
 
 Closes the slice AE follow-up with pins only: migration's
 `iso_timestamp_to_ms` fallback absorbs bad timestamps (rewrites as

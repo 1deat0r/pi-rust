@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AG: sdk read_session_metadata v4→v3 fallback (last updated 2026-09-23)
+### Session slice AG: sdk read_session_metadata v4→v3 fallback (last updated 2026-09-23, committed `e8f275f`)
 
 Slice AG (oracle `importFromJsonl` copy→`SessionManager.open` type+id
 validation — agent-session-runtime.ts:361-405; genuine TDD RED 2/2):
