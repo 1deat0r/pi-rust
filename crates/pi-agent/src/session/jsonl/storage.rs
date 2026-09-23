@@ -8,7 +8,10 @@ use super::super::types::{
 };
 use super::errors::{file_result, JsonlDecodeError, JsonlDecodeErrorKind};
 use super::v3;
-use super::{encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation};
+use super::{
+    encode_header, encode_mutation, first_parseable_line_index, metadata_from_header, parse_header,
+    parse_mutation,
+};
 use crate::fs::FileSystem;
 use crate::harness::text_lines::split_text_lines;
 use crate::types::FileError;
@@ -120,30 +123,47 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         // only a final line *without* `\n` may be a torn tail. A complete
         // terminated line that fails to parse always rejects.
         let text_lines = split_text_lines(&content);
-        if text_lines.is_empty() || text_lines[0].text.is_empty() {
-            return Err(LoadError::InvalidFile {
-                path: path.to_string(),
-                line: 1,
-                kind: JsonlDecodeErrorKind::Schema,
-                message: "is missing a header".to_string(),
-            });
-        }
-        let (header, format) = match parse_header(&text_lines[0].text) {
+        let line_texts: Vec<&str> = text_lines.iter().map(|line| line.text.as_str()).collect();
+        let missing_header = |line: usize| LoadError::InvalidFile {
+            path: path.to_string(),
+            line,
+            kind: JsonlDecodeErrorKind::Schema,
+            message: "is missing a header".to_string(),
+        };
+        // Hunt the header: blank and unparseable leading lines are
+        // skipped (oracle SessionManager `readSessionHeader` /
+        // `parseSessionHeaderCandidate`); the first parseable line must
+        // be the session header. When nothing parses at all, preserve
+        // the original first-line diagnostics (torn header = missing).
+        let header_index = match first_parseable_line_index(&line_texts) {
+            Some(index) => index,
+            None => {
+                if text_lines.is_empty() || text_lines[0].text.is_empty() {
+                    return Err(missing_header(1));
+                }
+                if !text_lines[0].terminated {
+                    return Err(missing_header(1));
+                }
+                return Err(invalid_file(path, 1, {
+                    match parse_header(&text_lines[0].text) {
+                        Err(error) => error,
+                        // Unreachable: a parseable header would have been found.
+                        Ok(_) => return Err(missing_header(1)),
+                    }
+                }));
+            }
+        };
+        let (header, format) = match parse_header(line_texts[header_index]) {
             Ok(header) => (header, SessionFileFormat::V4),
-            Err(v4_error) => match v3::parse_header(&text_lines[0].text) {
+            Err(v4_error) => match v3::parse_header(line_texts[header_index]) {
                 Ok(header) => (header, SessionFileFormat::V3),
                 Err(_) => {
                     // Oracle parity (`readJsonlHeader`): an unterminated
-                    // first line is a torn header, refused as missing.
-                    if !text_lines[0].terminated {
-                        return Err(LoadError::InvalidFile {
-                            path: path.to_string(),
-                            line: 1,
-                            kind: JsonlDecodeErrorKind::Schema,
-                            message: "is missing a header".to_string(),
-                        });
+                    // header line is torn, refused as missing.
+                    if !text_lines[header_index].terminated {
+                        return Err(missing_header(header_index + 1));
                     }
-                    return Err(invalid_file(path, 1, v4_error));
+                    return Err(invalid_file(path, header_index + 1, v4_error));
                 }
             },
         };
@@ -166,8 +186,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         };
         let mut torn_tail_repaired = false;
         let mut legacy_seq = 0u64;
-        let line_texts: Vec<&str> = text_lines.iter().map(|l| l.text.as_str()).collect();
-        for (index, line) in line_texts.iter().enumerate().skip(1) {
+        for (index, line) in line_texts.iter().enumerate().skip(header_index + 1) {
             if format == SessionFileFormat::V3 && line.trim().is_empty() {
                 continue;
             }

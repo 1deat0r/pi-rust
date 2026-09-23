@@ -763,6 +763,52 @@ fn find_by_id_reads_headers_only_upstream_9601() {
     });
 }
 
+/// Oracle `readSessionHeaderForDiscovery` / `parseSessionHeaderCandidate`:
+/// blank and unparseable leading lines are skipped while hunting the
+/// session header; the first *parseable* line must be that header.
+/// TDD RED: discovery reads only the first line today.
+#[test]
+fn list_and_find_by_id_scan_past_leading_garbage() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut r = repo(fs.clone());
+        let cwd = "/work/scan-project".to_string();
+        let session = r
+            .create(CreateOptions {
+                id: Some("scan-target".into()),
+                cwd: cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .unwrap();
+        let path = session.get_metadata().await.path;
+        drop(session);
+
+        let content = fs.content(&path).unwrap();
+        fs.write_file(&path, &format!("\nnot json\n{{broken json\n{content}"))
+            .unwrap();
+
+        let listed = r.list(Some(&cwd)).await.unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "discovery must scan past blank/garbage to the header"
+        );
+        assert_eq!(listed[0].id, "scan-target");
+        let found = r.find_by_id(&cwd, "scan-target").await.unwrap();
+        assert!(
+            found.is_some(),
+            "exact-id lookup must scan past blank/garbage to the header"
+        );
+    });
+}
+
 #[test]
 fn discovery_follows_symlinked_session_roots() {
     // SES-007 residual: discovery through a symlinked sessions root

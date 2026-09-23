@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
 
 //! Port of `packages/coding-agent/test/session-file-invalid.test.ts` plus
-//! the `SessionManager.setSessionFile` / `forkFrom` open boundaries from
+//! the `SessionManager.setSessionFile` / `forkFrom` open boundaries and
+//! the `readSessionHeader` leading-header scan from
 //! `packages/coding-agent/test/session-manager/file-operations.test.ts`.
 //!
 //! - `--session <non-session-file>` prints the upstream `openSessionOrExit`
@@ -10,9 +11,11 @@
 //! - `--session <empty-file>` initializes the file in place with a valid
 //!   session header (oracle `_setSessionFile` entries-empty + size-0
 //!   branch), runs the turn, and reopens with a stable id.
-//! - `--fork <empty-or-invalid-source>` refuses with the upstream
-//!   `Cannot fork: source session file is empty or invalid: <path>`
+//! - `--session <empty-or-invalid-source>` for `--fork` refuses with the
+//!   upstream `Cannot fork: source session file is empty or invalid`
 //!   diagnostic and never touches the source.
+//! - Blank/unparseable leading lines are skipped while hunting the
+//!   session header (`SessionManager.open` + discovery both scan).
 
 use std::fs;
 use std::path::PathBuf;
@@ -278,5 +281,129 @@ fn session_fork_non_session_source_fails_closed_preserving_content() {
         fs::read(&source).unwrap(),
         original,
         "fork refusal must preserve the source"
+    );
+}
+
+/// Recursively collect `.jsonl` files under `root`.
+fn jsonl_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(jsonl_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+fn faux_run(sandbox: &Sandbox, args: &[&str]) -> Output {
+    let mut full = vec![
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+    ];
+    full.extend_from_slice(args);
+    sandbox.run(&full)
+}
+
+/// Oracle `readSessionHeader` / file-operations "leading malformed lines"
+/// (`SessionManager.open` finds the header after `not json\n{broken
+/// json\n`): the whole `--session` chain must scan past blank/garbage
+/// leading lines to the first parseable header line. TDD RED: the chain
+/// reads only the first line today.
+#[test]
+fn session_flag_scans_past_leading_garbage_to_the_header() {
+    let sandbox = Sandbox::new("scan-open");
+    let seeded = faux_run(
+        &sandbox,
+        &["--session-id", "scan-target", "-p", "seed prompt"],
+    );
+    assert!(seeded.status.success(), "seed stderr: {}", stderr(&seeded));
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(files.len(), 1, "one seeded session");
+    let session_file = files.into_iter().next().unwrap();
+    let original = fs::read_to_string(&session_file).expect("read seed session");
+    fs::write(
+        &session_file,
+        format!("not json\n{{broken json\n{original}"),
+    )
+    .expect("prepend garbage");
+
+    let reopened = faux_run(
+        &sandbox,
+        &[
+            "--session",
+            session_file.to_str().unwrap(),
+            "-p",
+            "after garbage",
+        ],
+    );
+    assert!(
+        reopened.status.success(),
+        "garbage-prefixed --session must open: {}",
+        stderr(&reopened)
+    );
+    assert!(
+        stdout(&reopened).contains("faux response to: after garbage"),
+        "faux turn missing: {}",
+        stdout(&reopened)
+    );
+    let contents = fs::read_to_string(&session_file).expect("read reopened session");
+    assert!(
+        contents.contains("seed prompt"),
+        "original history must survive the reopen"
+    );
+    assert_eq!(jsonl_files(&sandbox.sessions).len(), 1, "no new file");
+}
+
+/// Discovery half of the same oracle contract: `--continue` must find a
+/// garbage-prefixed session (oracle `readSessionHeaderForDiscovery`
+/// scans) instead of silently falling back to a fresh session.
+#[test]
+fn continue_discovers_garbage_prefixed_session_instead_of_fresh_fallback() {
+    let sandbox = Sandbox::new("scan-continue");
+    let seeded = faux_run(&sandbox, &["-p", "seed prompt"]);
+    assert!(seeded.status.success(), "seed stderr: {}", stderr(&seeded));
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(files.len(), 1, "one seeded session");
+    let session_file = files.into_iter().next().unwrap();
+    let original = fs::read_to_string(&session_file).expect("read seed session");
+    fs::write(
+        &session_file,
+        format!("\nnot json\n{{broken json\n{original}"),
+    )
+    .expect("prepend garbage");
+
+    let continued = faux_run(&sandbox, &["--continue", "-p", "continued"]);
+    assert!(
+        continued.status.success(),
+        "garbage-prefixed continue must reopen: {}",
+        stderr(&continued)
+    );
+    assert!(
+        stdout(&continued).contains("faux response to: continued"),
+        "faux turn missing: {}",
+        stdout(&continued)
+    );
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(
+        files.len(),
+        1,
+        "continue must reopen the original, not fall back to a fresh session"
+    );
+    let contents = fs::read_to_string(&files[0]).expect("read continued session");
+    assert!(
+        contents.contains("seed prompt") && contents.contains("continued"),
+        "both turns must live in the reopened original"
     );
 }

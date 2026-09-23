@@ -215,11 +215,18 @@ fn absolute_path(path: &str) -> String {
 
 fn read_session_metadata(path: &str) -> Result<pi_agent::session::SessionMetadata, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("read session: {e}"))?;
-    let header_line = content
-        .lines()
-        .next()
-        .ok_or_else(|| "session file is empty".to_string())?;
-    let header = pi_agent::session::jsonl::parse_header(header_line)
+    let lines: Vec<&str> = content.lines().collect();
+    // Scan past blank/unparseable leading lines to the first parseable
+    // header candidate (oracle `readSessionHeader`); when nothing
+    // parses, fall back to the first line so the pre-scan diagnostic
+    // ("session file is empty" / "invalid session header") is kept.
+    let candidate = match pi_agent::session::jsonl::first_parseable_line_index(&lines) {
+        Some(index) => lines[index],
+        None => lines
+            .first()
+            .ok_or_else(|| "session file is empty".to_string())?,
+    };
+    let header = pi_agent::session::jsonl::parse_header(candidate)
         .map_err(|e| format!("invalid session header: {e}"))?;
     let modified_at = std::fs::metadata(path)
         .ok()

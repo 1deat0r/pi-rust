@@ -39,6 +39,16 @@ fn is_object(value: &JsonValue) -> bool {
     matches!(value, JsonValue::Object(_))
 }
 
+/// Index of the first line that parses as JSON, skipping blank and
+/// unparseable lines (oracle `parseSessionHeaderCandidate` /
+/// `loadEntriesFromFile` leading scan). The first *parseable* line is
+/// the header candidate — a parseable non-header stops the scan there.
+pub fn first_parseable_line_index(lines: &[&str]) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| !line.trim().is_empty() && serde_json::from_str::<JsonValue>(line).is_ok())
+}
+
 /// Parses a JSONL line into an object, mapping JSON syntax errors to
 /// `JsonlDecodeError::Syntax`.
 fn parse_object(line: &str) -> Result<serde_json::Map<String, JsonValue>, JsonlDecodeError> {

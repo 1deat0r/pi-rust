@@ -1824,13 +1824,18 @@ pub(crate) fn metadata_from_session_path(
             SessionFileIntent::Fork => return Err(session_file_refusal(path, intent)),
         }
     }
-    let Some(first_line) = content.lines().find(|line| !line.trim().is_empty()) else {
-        // Non-empty but blank-only: upstream `loadEntriesFromFile` yields
-        // no entries, which `_setSessionFile` refuses (size > 0) and
-        // `forkFrom` refuses with the Cannot-fork family.
+    let lines: Vec<&str> = content.lines().collect();
+    // Hunt the header: blank and unparseable leading lines are skipped
+    // (oracle `loadEntriesFromFile` / `parseSessionHeaderCandidate`);
+    // the first parseable line must be the session header.
+    let Some(header_index) = pi_agent::session::jsonl::first_parseable_line_index(&lines) else {
+        // No parseable line at all: upstream yields no entries, which
+        // `_setSessionFile` refuses (size > 0) and `forkFrom` refuses
+        // with the Cannot-fork family. Blank-only content lands here too.
         return Err(session_file_refusal(path, intent));
     };
-    let header: serde_json::Value = serde_json::from_str(first_line)
+    let header_line = lines[header_index];
+    let header: serde_json::Value = serde_json::from_str(header_line)
         .map_err(|error| format!("parse session header {}: {error}", path.display()))?;
     let is_v4 = header.get("kind").and_then(serde_json::Value::as_str) == Some("header");
     let is_v3 = header.get("type").and_then(serde_json::Value::as_str) == Some("session");
@@ -1838,7 +1843,7 @@ pub(crate) fn metadata_from_session_path(
         return Err(session_file_refusal(path, intent));
     }
     if is_v3 {
-        let parsed = pi_agent::session::jsonl::parse_v3_header(first_line)
+        let parsed = pi_agent::session::jsonl::parse_v3_header(header_line)
             .map_err(|error| format!("parse session header {}: {error}", path.display()))?;
         let modified_at = std::fs::metadata(path)
             .and_then(|metadata| metadata.modified())

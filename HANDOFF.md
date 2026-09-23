@@ -2,6 +2,27 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AC — first-parseable header scan (uncommitted)
+
+Slice-Z follow-up closed (oracle file-operations leading-lines +
+`readSessionHeader` scan; genuine RED 4/4): shared
+`first_parseable_line_index` wired into storage load, repo list,
+find_by_id, `metadata_from_session_path` (scan-miss → intent
+refusal), sdk import reader. Scan-miss preserves slice-X
+missing-header diagnostics; interior/torn-tail pins green; body
+garbage stays rejected (agent-storage oracle contract —
+SessionManager body-skip assessed-not-ported, conflicting layers).
+Stale find_by_id + module docs corrected. Gates: storage 18/18,
+repo 17/17, session_file_invalid 6/6, restart 13/13, import 2/2,
+session_id 1/1, flag 7/7, clean_home 12/12, print 14/14, json
+9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety
+2/2, export 1/1, agent lib 276 + all suites, sb 13 suites,
+coding-agent 918, clippy 0 warnings (3 crates), fmt, diff,
+docs-lint 0 issues, conversion 100.00% (166/166). No row
+promoted (SES-001/SES-007/CLI-012/CLI-014 notes extended);
+metrics unchanged (58/318). Next: commit + push, then continue
+the sweep.
+
 ### Session slice AB — session-id read-only pin + warning cleanup (committed + pushed)
 
 Oracle `session-id-readonly` case 1 ported (evidence-only green):

@@ -8,7 +8,7 @@ use super::super::state::ForkOptions;
 use super::super::types::{JsonlV4Header, SessionError, SessionErrorKind, SessionMetadata};
 use super::storage::JsonlSessionStorage;
 use super::v3;
-use super::{metadata_from_header, parse_header};
+use super::{first_parseable_line_index, metadata_from_header, parse_header};
 use crate::fs::FileSystem;
 use crate::types::FileError;
 
@@ -165,10 +165,12 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
     }
 
     /// Find an exact session id without loading transcript bodies
-    /// (upstream `SessionManager.findById`, #9601 fixing #9440): only
-    /// the first line (the header) of each `.jsonl` candidate is read,
-    /// corrupt/unreadable files are skipped, and a missing directory
-    /// yields `None` instead of an error — matching `list()`.
+    /// (upstream `SessionManager.findById`, #9601 fixing #9440): each
+    /// `.jsonl` candidate is scanned past blank/unparseable leading
+    /// lines to its first parseable header line (oracle
+    /// `readSessionHeaderForDiscovery`), corrupt/unreadable files are
+    /// skipped, and a missing directory yields `None` instead of an
+    /// error — matching `list()`.
     pub async fn find_by_id(
         &self,
         cwd: &str,
@@ -194,19 +196,18 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
             let Ok(lines) = self.fs.read_text_lines(&path) else {
                 continue;
             };
-            let Some(first_line) = lines.first() else {
+            let line_texts: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let Some(header_index) = first_parseable_line_index(&line_texts) else {
                 continue;
             };
-            if first_line.is_empty() {
-                continue;
-            }
-            let header = match parse_header(first_line) {
+            let candidate = line_texts[header_index];
+            let header = match parse_header(candidate) {
                 Ok(header) => {
                     let mut item = metadata_from_header(&header, &path, entry.mtime_ms);
                     item.source_format = 4;
                     item
                 }
-                Err(_) => match v3::parse_header(first_line) {
+                Err(_) => match v3::parse_header(candidate) {
                     Ok(header) => {
                         let mut item = metadata_from_header(&header, &path, entry.mtime_ms);
                         item.source_format = 3;
@@ -485,15 +486,18 @@ pub fn list_jsonl_session_metadata<F: FileSystem>(
             }
             let path = fs.join_path(&directory, &entry.name);
             let content = fs.read_text_file(&path)?;
-            let first_line = content.lines().next().unwrap_or("");
-            if first_line.is_empty() {
+            let lines: Vec<&str> = content.lines().collect();
+            // Discovery scans past blank/unparseable leading lines to the
+            // first parseable header (oracle `readSessionHeaderForDiscovery`).
+            let Some(header_index) = first_parseable_line_index(&lines) else {
                 continue;
-            }
-            if let Ok(header) = parse_header(first_line) {
+            };
+            let candidate = lines[header_index];
+            if let Ok(header) = parse_header(candidate) {
                 metadata.push(metadata_from_header(&header, &path, entry.mtime_ms));
                 continue;
             }
-            let Ok(header) = v3::parse_header(first_line) else {
+            let Ok(header) = v3::parse_header(candidate) else {
                 continue;
             };
             let mut item = metadata_from_header(&header, &path, entry.mtime_ms);

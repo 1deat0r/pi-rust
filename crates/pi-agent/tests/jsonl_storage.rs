@@ -1095,3 +1095,89 @@ fn load_rejects_malformed_interior_line_without_rewriting() {
         assert!(!fs.exists("/sessions/corrupt.jsonl.tmp"));
     });
 }
+
+/// Oracle SessionManager `readSessionHeader` / `parseSessionHeaderCandidate`
+/// (file-operations "leading blank lines" + "leading malformed lines"):
+/// blank and unparseable leading lines are skipped while hunting the
+/// session header; the first *parseable* line must be that header.
+/// TDD RED: `load` reads only the first line today.
+#[test]
+fn load_scans_past_leading_blank_and_garbage_lines_to_the_header() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header_line = serde_json::to_string(&header("scan", "/work")).unwrap();
+        let entry_line = serde_json::to_string(&pi_agent::session::types::Mutation::Entry {
+            lane: Some("main".into()),
+            entry: Entry::Custom {
+                id: "kept".into(),
+                seq: 1,
+                parent_id: None,
+                timestamp: 1,
+                custom_type: "note".into(),
+                data: None,
+            },
+        })
+        .unwrap();
+        let content = format!("\nnot json\n{{broken json\n{header_line}\n{entry_line}\n");
+        fs.write_file("/sessions/scan.jsonl", &content).unwrap();
+
+        let mut restored = JsonlSessionStorage::load(fs.clone(), "/sessions/scan.jsonl")
+            .await
+            .expect("load must scan past blank/garbage to the header");
+        let entries = restored
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1, "header + body after the scan");
+        assert_eq!(entries[0].id(), "kept");
+        assert!(!fs.exists("/sessions/scan.jsonl.tmp"));
+
+        // Writes after the scan continue the sequence.
+        let appended = restored
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "after".into(),
+                    message: user_message("after scan"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        assert_eq!(appended.seq(), 2);
+    });
+}
+
+/// When no line parses as JSON at all, `load` refuses without touching
+/// the file (oracle SessionManager: `loadEntriesFromFile` yields no
+/// entries → open refuses; the storage layer never rewrites).
+#[test]
+fn load_refuses_when_no_line_parses_as_a_session_header() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let garbage = "not json\n{broken json\n";
+        fs.write_file("/sessions/all-garbage.jsonl", garbage)
+            .unwrap();
+
+        JsonlSessionStorage::load(fs.clone(), "/sessions/all-garbage.jsonl")
+            .await
+            .expect_err("a file with no parseable header must refuse");
+        assert_eq!(
+            fs.content("/sessions/all-garbage.jsonl").unwrap(),
+            garbage,
+            "refusal must leave the file byte-identical"
+        );
+        assert!(!fs.exists("/sessions/all-garbage.jsonl.tmp"));
+    });
+}

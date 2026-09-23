@@ -2,6 +2,63 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AC: first-parseable header scan across the open chain (last updated 2026-09-23)
+
+Slice AC (slice-Z follow-up closed; oracle file-operations
+"leading blank/malformed lines" + `readSessionHeader`/
+`parseSessionHeaderCandidate`/`loadEntriesFromFile`; genuine TDD
+RED 4/4): the whole session-open family read only the first
+(non-blank) line when locating the header, so a session file with
+blank or unparseable leading lines was refused where the oracle
+SCANS past them — the first *parseable* line must be the header,
+and only that line decides accept/refuse. New shared helper
+`jsonl::first_parseable_line_index` (skip blank + unparseable;
+stop at first parseable) applied at five surfaces: (1)
+`JsonlSessionStorage::load` — header hunted by scan; scan-miss
+preserves the original first-line diagnostics (empty → missing
+header, torn unterminated → missing header per slice X, garbage
+→ line-1 invalid); body loop starts after the found header
+(interior/torn-tail rules unchanged, physical line numbers
+preserved); (2) `list_jsonl_session_metadata` discovery scan;
+(3) `find_by_id` header scan (doc comment corrected — no longer
+"only the first line"); (4) `metadata_from_session_path` —
+scan-None maps to the intent refusal (friendly/Cannot-fork:
+upstream `loadEntriesFromFile` yields no entries), replacing the
+old ad-hoc `parse session header` error for all-garbage files
+(closer to oracle; no pins relied on the old message); (5) sdk
+`read_session_metadata` (import chain — oracle import =
+copy + `SessionManager.open` scan) with the pre-scan diagnostics
+preserved on scan-miss. Oracle's bounded 1 MiB header-scan limit
+needs no port (Rust reads whole files = always the full-load
+fallback path). Conflation recorded: oracle has two loaders
+(SessionManager scan-tolerant vs agent `JsonlStorage`
+strict-first-line) while Rust's storage serves both roles — the
+SessionManager contract wins where pinned (file-operations
+fixtures), agent-storage strictness pins (slice X torn header,
+slice V/X interior/torn-tail) all stay green. Body-line garbage
+after the header stays rejected (agent-storage oracle
+interior-line contract, pinned since slice V) — SessionManager's
+body-skip half assessed-not-ported (conflicting oracle layers,
+no process pin on the `--session` chain). Four RED pins: storage
+scan + storage scan-miss refusal (the latter green-first,
+evidence), repo list/find_by_id scan, and two process pins
+(`--session` reopen after prepending `not json\n{broken json\n`,
+`--continue` reopening the prefixed original instead of the
+fresh fallback). Drive-bys: stale `find_by_id` + test-module doc
+comments corrected. Gate: jsonl_storage 18/18 (+2), jsonl_repo
+17/17 (+1), session_file_invalid 6/6 (+2), restart 13/13,
+import 2/2, session_id_readonly 1/1, flag 7/7, clean_home 12/12,
+print 14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions
+10/10, file safety 2/2, export 1/1, pi-agent lib 276/276 + all
+suites, session-backends 13 suites, coding-agent lib 918/918,
+clippy all-targets 0 warnings (3 crates, held from slice AB),
+fmt clean, diff clean, docs-lint 0 issues, conversion 100.00%
+(166/166). No parity row promoted (SES-001, SES-007, CLI-012,
+CLI-014 evidence notes extended; statuses held). Metrics
+unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Session slice AB: session-id read-only pin + chronic-warning cleanup (last updated 2026-09-22)
 
 Slice AB (evidence-only pin + requested amateur-code hygiene):
