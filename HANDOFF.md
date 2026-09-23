@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration (in progress: code + docs ready, awaiting commit)
+### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration (committed + pushed)
 
 Closes slice AG follow-up (genuine RED 2/2): pure-sdk
 `open_session` / `import_prepared_session` call
@@ -25,8 +25,8 @@ pi-agent 276, pi-tui 409, pi-ai 487, restart 13/13, resources
 warnings, fmt, diff, docs-lint 0 issues, conversion 100.00%
 (166/166). Metrics unchanged (58/318). SES-012 note extended.
 Changed files: sdk.rs, session_import_parity.rs, rpc.rs,
-command_transcript.json + this/PLAN/ledger. Next: commit + push +
-handoff-mark, then continue the sweep.
+command_transcript.json + this/PLAN/ledger. Committed `4c1d372`,
+pushed, hashes match. Next: continue the sweep.
 
 ### Session slice AG — sdk read_session_metadata v4→v3 fallback (committed + pushed)
 

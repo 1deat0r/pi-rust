@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AH: pure-sdk v3 bad-ts/missing-cwd open+import via migration (last updated 2026-09-23)
+### Session slice AH: pure-sdk v3 bad-ts/missing-cwd open+import via migration (last updated 2026-09-23, committed `4c1d372`)
 
 Slice AH closes the slice AG follow-up (oracle
 `parseSessionHeaderCandidate` validates type+id only —
