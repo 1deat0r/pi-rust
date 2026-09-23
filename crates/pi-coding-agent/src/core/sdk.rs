@@ -226,8 +226,15 @@ fn read_session_metadata(path: &str) -> Result<pi_agent::session::SessionMetadat
             .first()
             .ok_or_else(|| "session file is empty".to_string())?,
     };
-    let header = pi_agent::session::jsonl::parse_header(candidate)
-        .map_err(|e| format!("invalid session header: {e}"))?;
+    // Prefer the durable v4 header; fall back to the legacy v3 parser
+    // (same dual-parse as `JsonlSessionStorage::load`) so `open` and
+    // `importFromJsonl` accept v3 sessions (oracle
+    // agent-session-runtime.test.ts:229-245).
+    let header = match pi_agent::session::jsonl::parse_header(candidate) {
+        Ok(header) => header,
+        Err(v4_error) => pi_agent::session::jsonl::parse_v3_header(candidate)
+            .map_err(|_| format!("invalid session header: {v4_error}"))?,
+    };
     let modified_at = std::fs::metadata(path)
         .ok()
         .and_then(|meta| meta.modified().ok())

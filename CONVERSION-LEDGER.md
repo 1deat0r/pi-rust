@@ -2,6 +2,43 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AG: sdk read_session_metadata v4→v3 fallback (last updated 2026-09-23)
+
+Slice AG (oracle `importFromJsonl` copy→`SessionManager.open` type+id
+validation — agent-session-runtime.ts:361-405; genuine TDD RED 2/2):
+the sdk `read_session_metadata` path only ran the durable v4
+`parse_header`, so a valid **v3** header (`type:"session"`,
+`version:3`, string id/cwd, ISO timestamp) failed open and import
+with `invalid session header: ... is not a header` where the oracle
+accepts it (oracle test pin agent-session-runtime.test.ts:229-245
+imports a v3 header-only file; `parseSessionHeaderCandidate`
+session-manager.ts:564 checks type+id only). Fix: v4 parse first,
+on Err fall back to `parse_v3_header` (same dual-parse as
+`JsonlSessionStorage::load` storage.rs:156-158); both Err preserves
+`format!("invalid session header: {v4_error}")` so the existing
+invalid-header pin stays green. Two new pins in
+`session_import_parity` (now 4/4): `session_from_import_accepts_a_
+v3_header` and `open_session_accepts_a_v3_header` — both fail on
+v4-only parse, pass after the fallback. Existing missing-file and
+invalid-header refusal pins stay green. Known remaining follow-up:
+SDK path still does not migrate v3 bad-ts/missing-cwd on import
+(oracle `importFromJsonl` does not migrate either — it only
+validates type+id; Rust CLI `--session` migrates first per SES-006,
+so that path stays covered by slice AF pins); if a lenient
+timestamp/cwd fallback is ever needed on the pure-sdk path it is a
+separate slice. Gate: session_import_parity 4/4 (+2 genuine RED),
+session_file_invalid 12/12, lib 918/918, pi-agent lib 276, pi-tui
+409 (one flaky `keys::legacy_alt_aliases` re-run green under load),
+restart 13/13, resources 11/11, flag 7/7, clean_home 12/12, print
+14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety
+2/2, session_id 1/1, export 1/1, sb 13 suites, clippy all-targets 0 warnings (3
+crates), fmt clean, diff clean, docs-lint 0 issues, conversion
+100.00% (166/166). SES-012 note extended (v3 import/open accepted).
+Also green this slice: sb 13 suites, export invalid 1/1,
+cli_exhaustive_real 6/6. Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Session slice AF: bad-timestamp / missing-cwd acceptance pins (last updated 2026-09-23)
 
 Slice AF (closes the slice AE follow-up — oracle `loadEntriesFromFile`

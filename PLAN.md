@@ -7,6 +7,24 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AG — sdk read_session_metadata v4→v3 fallback
+
+Closed the sdk v3-import/open divergence (genuine RED 2/2): oracle
+`importFromJsonl` validates type+id only and accepts a v3
+header-only file (agent-session-runtime.test.ts:229-245); Rust
+`read_session_metadata` was v4-only. Dual-parse fallback (v4 then
+v3) matches `JsonlSessionStorage::load`; dual-Err preserves the v4
+`invalid session header` diagnostic. Two new pins in
+session_import_parity (4/4). Follow-up noted: pure-sdk path does
+not migrate v3 bad-ts/missing-cwd (oracle import does not migrate
+either — CLI `--session` still migrates via SES-006/slice AF).
+No row promoted (SES-012 note extended). Gate green: import 4/4,
+invalid 12/12, lib 918, restart 13/13, resources 11/11, flag 7/7,
+clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime
+3/3, extensions 10/10, file safety 2/2, session_id 1/1, export
+1/1, sb 13 suites, clippy 0, fmt, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Session slice AF — bad-timestamp / missing-cwd acceptance pins
 
 Closes the slice AE follow-up with pins only: migration's
