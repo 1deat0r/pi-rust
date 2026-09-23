@@ -414,6 +414,95 @@ fn session_fork_v3_header_without_id_fails_closed_with_cannot_fork() {
     assert!(!diagnostics.contains("parse session header"));
 }
 
+/// Oracle header validation is only `type === "session"` + string `id` —
+/// a malformed `timestamp` still loads (`loadEntriesFromFile` returns the
+/// entries; `_loadEntries` never parses the timestamp; `buildSessionInfo`
+/// falls back through `Number.isNaN` / mtime). Rust's strict
+/// `parse_v3_header` used to refuse this family; the open chain must
+/// accept it (via lenient parse or the legacy-migration fallback) and
+/// run the turn.
+#[test]
+fn session_flag_v3_header_with_bad_timestamp_still_opens() {
+    let sandbox = Sandbox::new("v3-badts");
+    let session_file = sandbox.root.join("v3-bad-ts.jsonl");
+    fs::write(
+        &session_file,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"badts-1\",\"timestamp\":\"not-a-date\",\"cwd\":\"/tmp\"}\n{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"also-not-a-date\",\"message\":{\"role\":\"user\",\"content\":\"seed prompt\",\"timestamp\":1}}\n",
+    )
+    .expect("write v3 header with bad timestamps");
+
+    let output = faux_run(
+        &sandbox,
+        &["--session", session_file.to_str().unwrap(), "-p", "hi"],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "oracle accepts type+id headers regardless of timestamp: {}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("faux response to: hi"),
+        "faux turn missing: {}",
+        stdout(&output)
+    );
+    assert!(
+        !stderr(&output).contains("invalid timestamp")
+            && !stderr(&output).contains("parse session header"),
+        "strict timestamp diagnostics must not leak: {}",
+        stderr(&output)
+    );
+    let contents = fs::read_to_string(&session_file).expect("read session after open");
+    assert!(
+        contents.contains("seed prompt"),
+        "history must survive the open: {contents}"
+    );
+}
+
+/// Same oracle acceptance for a header missing `cwd` entirely:
+/// `loadEntriesFromFile` does not require `cwd`, and the session-cwd
+/// guard treats an empty stored cwd as "no stored cwd" (no refusal).
+/// The open chain must not reject the file at header validation.
+#[test]
+fn session_flag_v3_header_without_cwd_still_opens() {
+    let sandbox = Sandbox::new("v3-nocwd");
+    let session_file = sandbox.root.join("v3-no-cwd.jsonl");
+    fs::write(
+        &session_file,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"nocwd-1\",\"timestamp\":\"2025-01-01T00:00:00Z\"}\n{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"2025-01-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"seed prompt\",\"timestamp\":1}}\n",
+    )
+    .expect("write v3 header without cwd");
+
+    let output = faux_run(
+        &sandbox,
+        &["--session", session_file.to_str().unwrap(), "-p", "hi"],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "oracle accepts type+id headers without cwd: {}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("faux response to: hi"),
+        "faux turn missing: {}",
+        stdout(&output)
+    );
+    assert!(
+        !stderr(&output).contains("invalid cwd")
+            && !stderr(&output).contains("parse session header"),
+        "strict cwd diagnostics must not leak: {}",
+        stderr(&output)
+    );
+    let contents = fs::read_to_string(&session_file).expect("read session after open");
+    assert!(
+        contents.contains("seed prompt"),
+        "history must survive the open: {contents}"
+    );
+}
+
 /// Recursively collect `.jsonl` files under `root`.
 fn jsonl_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut found = Vec::new();

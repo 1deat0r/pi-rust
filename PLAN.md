@@ -7,6 +7,17 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AF — bad-timestamp / missing-cwd acceptance pins
+
+Closes the slice AE follow-up with pins only: migration's
+`iso_timestamp_to_ms` fallback absorbs bad timestamps (rewrites as
+v4 before strict parse) and empty-cwd is falsy-guarded upstream, so
+the open chain already accepts both. Two characterization pins
+(green on first run); session_file_invalid now 12/12. No code
+change, no row promoted (CLI-014 note extended). Gate green: all
+prior targets, clippy 0, fmt, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Session slice AE — bad-header refusal family
 
 Oracle `loadEntriesFromFile` validates only `type` + string `id`.

@@ -2,6 +2,44 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AF: bad-timestamp / missing-cwd acceptance pins (last updated 2026-09-23)
+
+Slice AF (closes the slice AE follow-up — oracle `loadEntriesFromFile`
+validates only `type` + string `id`): investigation showed the open
+chain ALREADY accepts both previously-flagged cases, so this is a
+pins-only slice with no production-code change. (1) v3 header with
+`id` + malformed `timestamp` (`"not-a-date"`): `migrate_legacy_
+session_file` passes the id gate, `iso_timestamp_to_ms` falls back to
+`now_ms` for non-parseable timestamps, the file is rewritten as a
+valid v4 header, and the turn runs — strict `parse_v3_header` never
+sees the garbage timestamp on the `--session` path. (2) v3 header
+without `cwd`: migration writes `cwd: ""`, the session-cwd guard
+treats empty as "no stored cwd" (`session-cwd.ts` `!sessionCwd`
+falsy check), and the turn runs. Two new regression pins in
+`session_file_invalid` (now 12/12): `session_flag_v3_header_with_
+bad_timestamp_still_opens` and `session_flag_v3_header_without_cwd_
+still_opens` — both GREEN on first run (characterization pins, not
+TDD RED; the migration fallback landed in earlier migration slices).
+Oracle reference: `loadEntriesFromFile` type+id only (session-manager
+.ts:551), `_loadEntries` never parses header timestamp (:954),
+`buildSessionInfo` NaN→mtime fallback (:743-757), session-cwd falsy
+empty-cwd guard (session-cwd.ts). Note: `metadata_from_session_path`
+strict `parse_v3_header` remains unreachable for these shapes when
+migration runs first (the normal explicit-path order); no lenient
+open-path parse was needed. One `--lib` failure observed once under
+parallel integration load (flaky temp collision); re-runs green
+918/918. Gate: session_file_invalid 12/12 (+2), lib 918/918, pi-agent
+lib 276, pi-tui 409, restart 13/13, import 2/2, session_id 1/1,
+cli_resources 11/11, flag 7/7, clean_home 12/12, print 14/14, json
+9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2,
+export 1/1, clippy all-targets 0 warnings (3 crates), fmt clean (2
+line-wraps applied in-slice), diff clean, docs-lint 0 issues,
+conversion 100.00% (166/166). No parity row promoted (CLI-014 note
+extended with the migration-absorbed acceptance); metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318). Follow-up from
+slice AE: CLOSED (absorbed by migration fallback; pins lock it).
+
 ### Session slice AE: bad-header refusal family (last updated 2026-09-23)
 
 Slice AE (oracle `loadEntriesFromFile` header validation —

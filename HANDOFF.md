@@ -2,6 +2,20 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AF — bad-timestamp / missing-cwd acceptance pins (uncommitted)
+
+Closes slice AE follow-up: both cases already accepted (migration
+`iso_timestamp_to_ms` now_ms fallback + empty-cwd falsy guard). Two
+characterization pins, green first run; session_file_invalid 12/12.
+No production-code change; CLI-014 note extended. One flaky --lib
+failure under parallel load (re-runs 918/918). Gates: lib 918,
+pi-agent 276, pi-tui 409, restart 13/13, import 2/2, session_id 1/1,
+resources 11/11, flag 7/7, clean_home 12/12, print 14/14, json 9/9,
+exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2,
+export 1/1, clippy 0 warnings, fmt, diff, docs-lint 0 issues,
+conversion 100.00% (166/166). Metrics unchanged (58/318). Next:
+commit + push, then continue the sweep.
+
 ### Session slice AE — bad-header refusal family (committed + pushed)
 
 Oracle type+id validation (RED 3/3): migration skips id-less v3
