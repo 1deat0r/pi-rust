@@ -2,6 +2,13 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AK — empty prompt creates no session file (checkpoint 2026-09-23)
+
+Oracle two-layer create: agent `JsonlStorage.create` writes the header immediately (via `publishJsonl`), while coding-agent `SessionManager.newSession` / `_setSessionFile` else-branch defers (`flushed=false`) until an assistant-bearing `_persist`. Print mode skips empty initial messages (`if (initialMessage)` / `parts.length > 0`), so `pi -p ""` must leave zero session files. Fix at the coding-agent layer only: new `create_pending` / `create_v3_pending` / `open_or_pending` keep the encoded header (+ pre-header Fact lines) in memory on `JsonlSessionStorage.pending_header`/`pending_lines` and materialize on the first non-Fact append; explicit missing `--session` path holds metadata via `pending_session_metadata` without initializing the file. Agent-package `JsonlSessionStorage::create` / `repo.create` / `create_v3` stay eager for pi-agent parity (oracle JsonlStorage.create still writes). RED: two new clean_home pins (`empty_print_prompt_writes_no_session_file`, `empty_prompt_with_explicit_missing_session_path_writes_no_file`) failed before the fix (eager header write). GREEN: both pass; oracle refs `print-mode.ts:131` `initialMessage`, `initial-message.ts:40`, `session-manager.ts` flushed/_persist. Intentional divergence: interactive/RPC/sdk create paths still eager (only CLI print preparation + explicit-path open defer; oracle interactive `newSession` also defers but interactive always materializes on first turn in practice — left for a later slice if an interactive empty-turn pin appears). Gates (evidence `unit`/`mock`/`live` as noted): `cargo test -p pi-coding-agent --test clean_home_cli_process` 14/14 (live process); `cli_flag_matrix` 7/7; `cli_session_restart_parity` 13/13; `session_file_invalid` 12/12; `session_import_parity` 6/6; `--lib` 918; `jsonl_storage` 17/17 + `jsonl_repo` 18/18 (unit); `cli_resources` missing_session 1/1; size-gate OK; docs-lint 0; `cargo fmt --check`; clippy `-D warnings` 0 (pi-agent + pi-coding-agent); `conversion_audit` Conversion progress: 100.00% (166/166; 0 open); `git diff --check` clean. Register: CLI-014 empty-prompt materialization note; metrics unchanged (111/107/59/58/58). Next dependency-safe action: continue the parity sweep (interactive empty-turn materialization pin if oracle requires it).
+
+Conversion progress: 100.00% (166/166; 0 open).
+
+
 ### Session slice AJ — docs checkpoint helper + post-commit always-push (checkpoint 2026-09-23)
 
 Docs commit `11e42fe` + impl commit `23a8d56`, both auto-pushed by

@@ -99,7 +99,7 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
     where
         F: Clone,
     {
-        self.create_with_format(options, false).await
+        self.create_with_format(options, false, false).await
     }
 
     /// Create an upstream-compatible v3 session. Native pi-agent callers use
@@ -109,12 +109,35 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
     where
         F: Clone,
     {
-        self.create_with_format(options, true).await
+        self.create_with_format(options, false, true).await
+    }
+
+    /// Create without materializing the file (oracle `SessionManager.newSession`).
+    pub async fn create_pending(
+        &mut self,
+        options: CreateOptions,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
+        self.create_with_format(options, true, false).await
+    }
+
+    /// Create a v3 header session without materializing the file.
+    pub async fn create_v3_pending(
+        &mut self,
+        options: CreateOptions,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
+        self.create_with_format(options, true, true).await
     }
 
     async fn create_with_format(
         &mut self,
         options: CreateOptions,
+        pending: bool,
         v3: bool,
     ) -> Result<Session<F>, SessionError>
     where
@@ -126,7 +149,13 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
         let dest = destination.clone();
         self.claim_create_destination(&destination, async move {
             let (header, path) = prepare_create(&sessions_root, &fs, &dest, &options)?;
-            let storage_result = if v3 {
+            let storage_result = if pending {
+                if v3 {
+                    JsonlSessionStorage::create_v3_pending(fs, &path, header).await
+                } else {
+                    JsonlSessionStorage::create_pending(fs, &path, header).await
+                }
+            } else if v3 {
                 JsonlSessionStorage::create_v3(fs, &path, header).await
             } else {
                 JsonlSessionStorage::create(fs, &path, header).await
@@ -158,6 +187,26 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
             ));
         }
         Ok(Session::new(storage))
+    }
+
+    /// Open an existing session file, or return pending storage for a path
+    /// that does not exist yet (oracle `_setSessionFile` else-branch).
+    pub async fn open_or_pending(
+        &self,
+        metadata: &SessionMetadata,
+        v3: bool,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
+        if !self.fs.exists(&metadata.path) {
+            let storage =
+                JsonlSessionStorage::create_pending_at_metadata(self.fs.clone(), metadata, v3)
+                    .await
+                    .map_err(StorageError)?;
+            return Ok(Session::new(storage));
+        }
+        self.open(metadata).await
     }
 
     pub async fn list(&self, cwd: Option<&str>) -> Result<Vec<SessionMetadata>, FileError> {

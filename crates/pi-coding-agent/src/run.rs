@@ -1505,7 +1505,7 @@ async fn prepare_run_session_with_settings(
             }
             .map_err(|error| format!("fork session {}: {error}", source.id))?
         } else {
-            repo.open(&source)
+            repo.open_or_pending(&source, v3)
                 .await
                 .map_err(|error| format!("open session {}: {error}", source.id))?
         }
@@ -1526,9 +1526,9 @@ async fn prepare_run_session_with_settings(
                 fork_options: ForkOptions::Tree,
             };
             if v3 {
-                repo.create_v3(create_options).await
+                repo.create_v3_pending(create_options).await
             } else {
-                repo.create(create_options).await
+                repo.create_pending(create_options).await
             }
             .map_err(|error| format!("create session: {error}"))?
         }
@@ -1544,9 +1544,9 @@ async fn prepare_run_session_with_settings(
             fork_options: ForkOptions::Tree,
         };
         if v3 {
-            repo.create_v3(create_options).await
+            repo.create_v3_pending(create_options).await
         } else {
-            repo.create(create_options).await
+            repo.create_pending(create_options).await
         }
         .map_err(|error| format!("create session: {error}"))?
     };
@@ -1802,6 +1802,23 @@ fn initialize_empty_session_file(path: &Path, cwd: &str) -> Result<(), String> {
         .map_err(|error| format!("initialize empty session {}: {error}", path.display()))
 }
 
+/// Metadata for an explicit `--session` path that does not exist yet —
+/// path and id held in memory only (oracle `_setSessionFile` else-branch).
+fn pending_session_metadata(path: &Path, cwd: &str) -> SessionMetadata {
+    let now = pi_agent::session::jsonl::repo::now_ms();
+    SessionMetadata {
+        id: pi_agent::session::new_id(),
+        created_at: now,
+        cwd: cwd.to_string(),
+        path: path.to_string_lossy().into_owned(),
+        modified_at: now,
+        source_format: 4,
+        parent_session_id: None,
+        legacy_parent_session_path: None,
+        metadata: None,
+    }
+}
+
 fn session_file_refusal(path: &Path, intent: SessionFileIntent) -> String {
     match intent {
         SessionFileIntent::Open => {
@@ -1823,11 +1840,9 @@ pub(crate) fn metadata_from_session_path(
         match intent {
             SessionFileIntent::Open => {
                 // Oracle `_setSessionFile` else-branch: an explicit path
-                // that does not exist is preserved — materialize a valid
-                // header there (the parent directory must exist), then
-                // read it back through the normal parse.
-                initialize_empty_session_file(path, cwd)?;
-                return metadata_from_session_path(path, cwd, intent);
+                // that does not exist is preserved in memory without a
+                // write; the first materializing append creates the file.
+                return Ok(pending_session_metadata(path, cwd));
             }
             SessionFileIntent::Fork => return Err(session_file_refusal(path, intent)),
         }

@@ -59,6 +59,13 @@ pub struct JsonlSessionStorage<F: FileSystem> {
     metadata: SessionMetadata,
     state: SessionState,
     format: SessionFileFormat,
+    /// Encoded header awaiting first materialization write (oracle
+    /// `SessionManager.newSession` / `_setSessionFile` else-branch:
+    /// path held in memory until an assistant-bearing persist).
+    pending_header: Option<String>,
+    /// Mutations buffered while `pending_header` is set (facts and
+    /// pre-assistant entries stay in memory only).
+    pending_lines: Vec<String>,
 }
 
 impl<F: FileSystem> JsonlSessionStorage<F> {
@@ -68,15 +75,35 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             metadata,
             state: SessionState::default(),
             format: SessionFileFormat::V4,
+            pending_header: None,
+            pending_lines: Vec::new(),
         }
     }
 
     pub async fn create(fs: F, path: &str, header: JsonlV4Header) -> Result<Self, FileError> {
-        Self::create_with_format(fs, path, header, SessionFileFormat::V4).await
+        Self::create_with_format(fs, path, header, SessionFileFormat::V4, false).await
     }
 
     pub async fn create_v3(fs: F, path: &str, header: JsonlV4Header) -> Result<Self, FileError> {
-        Self::create_with_format(fs, path, header, SessionFileFormat::V3).await
+        Self::create_with_format(fs, path, header, SessionFileFormat::V3, false).await
+    }
+
+    /// Create without writing the header: the file appears on the first
+    /// materializing append (coding-agent CLI SessionManager parity).
+    pub async fn create_pending(
+        fs: F,
+        path: &str,
+        header: JsonlV4Header,
+    ) -> Result<Self, FileError> {
+        Self::create_with_format(fs, path, header, SessionFileFormat::V4, true).await
+    }
+
+    pub async fn create_v3_pending(
+        fs: F,
+        path: &str,
+        header: JsonlV4Header,
+    ) -> Result<Self, FileError> {
+        Self::create_with_format(fs, path, header, SessionFileFormat::V3, true).await
     }
 
     async fn create_with_format(
@@ -84,21 +111,27 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         path: &str,
         header: JsonlV4Header,
         format: SessionFileFormat,
+        pending: bool,
     ) -> Result<Self, FileError> {
         let encoded_header = if format == SessionFileFormat::V3 {
             v3::encode_header(&header).map_err(to_fs)?
         } else {
             encode_header(&header).map_err(to_fs)?
         };
-        file_result(
-            fs.write_file(path, &encoded_header),
-            &format!("Failed to initialize session {path}"),
-        )?;
-        let file_info = file_result(
-            fs.file_info(path),
-            &format!("Failed to read session metadata {path}"),
-        )?;
-        let mut metadata = metadata_from_header(&header, path, file_info.mtime_ms);
+        let modified_at = if pending {
+            header.created_at
+        } else {
+            file_result(
+                fs.write_file(path, &encoded_header),
+                &format!("Failed to initialize session {path}"),
+            )?;
+            let file_info = file_result(
+                fs.file_info(path),
+                &format!("Failed to read session metadata {path}"),
+            )?;
+            file_info.mtime_ms
+        };
+        let mut metadata = metadata_from_header(&header, path, modified_at);
         metadata.source_format = if format == SessionFileFormat::V3 {
             3
         } else {
@@ -109,8 +142,47 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             metadata,
             state: SessionState::default(),
             format,
+            pending_header: pending.then_some(encoded_header),
+            pending_lines: Vec::new(),
         };
         Ok(storage)
+    }
+
+    /// Reconstruct a pending storage from existing metadata (explicit
+    /// `--session` path that does not exist yet).
+    pub async fn create_pending_at_metadata(
+        fs: F,
+        metadata: &SessionMetadata,
+        v3: bool,
+    ) -> Result<Self, FileError> {
+        let format = if v3 {
+            SessionFileFormat::V3
+        } else {
+            SessionFileFormat::V4
+        };
+        let header = JsonlV4Header {
+            kind: "header".into(),
+            version: if v3 { 3 } else { 4 },
+            id: metadata.id.clone(),
+            created_at: metadata.created_at,
+            cwd: metadata.cwd.clone(),
+            parent_session_id: metadata.parent_session_id.clone(),
+            legacy_parent_session_path: metadata.legacy_parent_session_path.clone(),
+            metadata: metadata.metadata.clone(),
+        };
+        let encoded_header = if format == SessionFileFormat::V3 {
+            v3::encode_header(&header).map_err(to_fs)?
+        } else {
+            encode_header(&header).map_err(to_fs)?
+        };
+        Ok(Self {
+            fs,
+            metadata: metadata.clone(),
+            state: SessionState::default(),
+            format,
+            pending_header: Some(encoded_header),
+            pending_lines: Vec::new(),
+        })
     }
 
     pub async fn load(fs: F, path: &str) -> Result<Self, LoadError> {
@@ -183,6 +255,8 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             metadata,
             state: SessionState::default(),
             format,
+            pending_header: None,
+            pending_lines: Vec::new(),
         };
         let mut torn_tail_repaired = false;
         let mut legacy_seq = 0u64;
@@ -524,6 +598,32 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         let Some(line) = line else {
             return Ok(());
         };
+        if let Some(header) = self.pending_header.take() {
+            // Facts alone never materialize (oracle `_persist` no-assistant
+            // guard). Buffer them until the first non-fact mutation.
+            if matches!(mutation, Mutation::Fact(_)) {
+                self.pending_header = Some(header);
+                self.pending_lines.push(line);
+                return Ok(());
+            }
+            file_result(
+                self.fs.write_file(&self.metadata.path, &header),
+                &format!("Failed to initialize session {}", self.metadata.path),
+            )
+            .map_err(|e| SessionError::new(SessionErrorKind::Storage, e.message))?;
+            let buffered = std::mem::take(&mut self.pending_lines);
+            for buffered_line in buffered {
+                file_result(
+                    self.fs.append_file_with_context(
+                        &self.metadata.path,
+                        &buffered_line,
+                        &crate::harness::run_context::RunContext::background(),
+                    ),
+                    &format!("Failed to append session {}", self.metadata.path),
+                )
+                .map_err(|e| SessionError::new(SessionErrorKind::Storage, e.message))?;
+            }
+        }
         file_result(
             self.fs.append_file_with_context(
                 &self.metadata.path,

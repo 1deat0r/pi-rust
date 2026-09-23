@@ -827,3 +827,66 @@ fn pi_rust_test_binary_override_is_accepted_for_this_matrix() {
     );
     assert_eq!(stdout(&output), "pi 0.85.1\n");
 }
+
+/// Oracle `buildInitialMessage` yields `undefined` when there are no parts,
+/// and print mode skips `session.prompt` entirely (`if (initialMessage)`).
+/// SessionManager then never reaches an assistant-bearing `_persist`, so the
+/// header-only path is never materialized on disk.
+#[test]
+fn empty_print_prompt_writes_no_session_file() {
+    let sandbox = Sandbox::new("empty-prompt");
+    let output = sandbox.run(&[
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "-p",
+        "",
+    ]);
+    assert!(
+        output.status.success(),
+        "empty prompt should exit 0: {}",
+        stderr(&output)
+    );
+    assert!(
+        sandbox.session_files().is_empty(),
+        "empty prompt must not create a session file, found {:?}",
+        sandbox.session_files()
+    );
+}
+
+/// Explicit missing `--session` path: oracle `_setSessionFile` preserves the
+/// path in memory (`newSession` sets `flushed=false`) but does not write until
+/// an assistant-bearing `_persist`. Empty prompt never prompts → no file.
+#[test]
+fn empty_prompt_with_explicit_missing_session_path_writes_no_file() {
+    let sandbox = Sandbox::new("empty-prompt-explicit");
+    let explicit = sandbox.sessions.join("never-created.jsonl");
+    let explicit_str = explicit.to_str().expect("utf8 path").to_string();
+    let output = sandbox.run(&[
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--session",
+        &explicit_str,
+        "-p",
+        "",
+    ]);
+    assert!(
+        output.status.success(),
+        "empty prompt + missing session should exit 0: {}",
+        stderr(&output)
+    );
+    assert!(
+        !explicit.exists(),
+        "explicit missing session path must stay absent when prompt is empty"
+    );
+    assert!(
+        sandbox.session_files().is_empty(),
+        "empty prompt must not create any session file, found {:?}",
+        sandbox.session_files()
+    );
+}
