@@ -26,6 +26,8 @@ clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime
 Next: commit + push, then continue the parity sweep (slice AG
 committed `e8f275f` + pushed).
 
+### Session slice AF — bad-timestamp / missing-cwd acceptance pins
+
 Closes the slice AE follow-up with pins only: migration's
 `iso_timestamp_to_ms` fallback absorbs bad timestamps (rewrites as
 v4 before strict parse) and empty-cwd is falsy-guarded upstream, so
