@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AB — session-id read-only pin + warning cleanup (uncommitted)
+### Session slice AB — session-id read-only pin + warning cleanup (committed + pushed)
 
 Oracle `session-id-readonly` case 1 ported (evidence-only green):
 `--session-id X --help` exits 0, empty stderr, zero persisted
@@ -20,7 +20,8 @@ extensions 10/10, agent lib 276 + proxy 13, tui 409, coding-agent
 918, pi-ai 487, session-backends 13 suites, clippy 0 warnings,
 fmt, diff, docs-lint 0 issues, conversion 100.00% (166/166). No
 row promoted (CLI-015 note extended); metrics unchanged (58/318).
-Next: commit + push, then continue the sweep.
+Committed `2e77f99`, pushed, hashes match. Next: continue the
+sweep.
 
 ### Session slice AA — continueRecent fresh-fallback + CLI-012 correction (committed + pushed)
 
