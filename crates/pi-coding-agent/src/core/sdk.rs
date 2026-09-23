@@ -109,6 +109,11 @@ impl SessionManager {
         path: impl AsRef<Path>,
     ) -> Result<Session<StdFileSystem>, String> {
         let path = absolute_path(&path.as_ref().to_string_lossy());
+        // Oracle `_loadEntries` migrates in-memory when version < 3 and
+        // accepts type+id headers regardless of timestamp/cwd. The Rust
+        // storage layer is strict, so run the same legacy migration
+        // the CLI `--session` path runs (slice AF) before the dual-parse.
+        crate::core::session_migration::migrate_legacy_session_file(Path::new(&path))?;
         let metadata = read_session_metadata(&path)?;
         self.repo
             .lock()
@@ -176,6 +181,10 @@ impl SessionManager {
             std::fs::copy(source, destination)
                 .map_err(|e| format!("copy session for import: {e}"))?;
         }
+        // Same pure-sdk migration as `open_session`: oracle
+        // `importFromJsonl` copies then opens via `SessionManager.open`
+        // (type+id only), and `_loadEntries` rewrites when version < 3.
+        crate::core::session_migration::migrate_legacy_session_file(destination)?;
         let mut metadata = read_session_metadata(&destination.to_string_lossy())?;
         if let Some(cwd) = cwd_override {
             metadata.cwd = absolute_path(cwd);

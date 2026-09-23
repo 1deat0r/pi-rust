@@ -235,8 +235,8 @@
         "result": {
           "summary": "Compaction summary: history retained",
           "firstKeptEntryId": "<entry-id>",
-          "tokensBefore": 5498,
-          "estimatedTokensAfter": 5498,
+          "tokensBefore": 938,
+          "estimatedTokensAfter": 938,
           "usage": {
             "input": 309,
             "output": 9,
@@ -267,8 +267,8 @@
         "data": {
           "summary": "Compaction summary: history retained",
           "firstKeptEntryId": "<entry-id>",
-          "tokensBefore": 5498,
-          "estimatedTokensAfter": 5498,
+          "tokensBefore": 938,
+          "estimatedTokensAfter": 938,
           "usage": {
             "input": 309,
             "output": 9,
@@ -503,11 +503,11 @@
           "toolResults": 0,
           "totalMessages": 2,
           "tokens": {
-            "input": 3052,
+            "input": 772,
             "output": 21,
             "cacheRead": 0,
-            "cacheWrite": 2743,
-            "total": 5816
+            "cacheWrite": 463,
+            "total": 1256
           },
           "cost": 0.0
         }

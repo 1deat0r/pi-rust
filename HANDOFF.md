@@ -2,6 +2,32 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration (in progress: code + docs ready, awaiting commit)
+
+Closes slice AG follow-up (genuine RED 2/2): pure-sdk
+`open_session` / `import_prepared_session` call
+`migrate_legacy_session_file` before `read_session_metadata`, so v3
+bad-ts/missing-cwd headers import and open (oracle type+id only;
+CLI path already covered by slice AF). session_import_parity 6/6
+(+2 pins). Intentional divergence: Rust rewrites v3→v4 on
+open/import (SES-006 pattern); oracle leaves valid v3 alone. Mid-
+slice gate blocker: `rpc_command_golden_transcript_matches_fixture`
+failed on clean HEAD (ancestor `Projects/AGENTS.md` mtime
+2026-09-23 17:45 leaked into faux usage via context-file discovery;
+actual 5584 vs fixture 5498). Fix: `--no-context-files` on shared
+`runtime_for_test_with_settings` + surgical fixture refresh
+(compact 5498→938; stats input 3052→772, cacheWrite 2743→463, total
+5816→1256). Gates all green: import 6/6, invalid 12/12, lib 918,
+pi-agent 276, pi-tui 409, pi-ai 487, restart 13/13, resources
+11/11, flag 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive
+6/6, runtime 3/3, extensions 10/10, file safety 2/2, session_id
+1/1, export 5/5, export invalid 1/1, sb 13 suites, clippy 0
+warnings, fmt, diff, docs-lint 0 issues, conversion 100.00%
+(166/166). Metrics unchanged (58/318). SES-012 note extended.
+Changed files: sdk.rs, session_import_parity.rs, rpc.rs,
+command_transcript.json + this/PLAN/ledger. Next: commit + push +
+handoff-mark, then continue the sweep.
+
 ### Session slice AG — sdk read_session_metadata v4→v3 fallback (committed + pushed)
 
 Oracle `importFromJsonl` accepts v3 headers (type+id only);

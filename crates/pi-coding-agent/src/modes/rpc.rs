@@ -5951,7 +5951,9 @@ mod tests {
     async fn runtime_for_test_with_settings(settings: SettingsManager) -> RpcRuntime {
         // Fully hermetic: pin an explicit faux model and a fresh session id/dir
         // so host-shell env (PI_MODEL / PI_SESSION_ID / PI_PROVIDER) cannot
-        // leak into the runtime construction.
+        // leak into the runtime construction. `--no-context-files` keeps
+        // ancestor AGENTS.md/CLAUDE.md out of the system prompt so faux
+        // usage estimates (and the golden transcript) stay host-independent.
         let root = std::env::temp_dir().join(format!("pi-rpc-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let args = crate::args::parse_args(&[
@@ -5966,6 +5968,7 @@ mod tests {
             "--no-tools".to_string(),
             "--no-skills".to_string(),
             "--no-prompt-templates".to_string(),
+            "--no-context-files".to_string(),
         ])
         .expect_run();
         RpcRuntime::new(&args, settings).await.unwrap()

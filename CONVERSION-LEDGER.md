@@ -2,6 +2,47 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AH: pure-sdk v3 bad-ts/missing-cwd open+import via migration (last updated 2026-09-23)
+
+Slice AH closes the slice AG follow-up (oracle
+`parseSessionHeaderCandidate` validates type+id only —
+session-manager.ts:564-568; genuine TDD RED 2/2): the pure-sdk
+`open_session` / `import_prepared_session` path still failed a v3
+header with a malformed `timestamp` or a missing `cwd` because
+`read_session_metadata` never migrates before the strict storage
+load (the CLI `--session` path already accepts both via
+`migrate_legacy_session_file`, slice AF pins). Fix: call
+`migrate_legacy_session_file` in `SessionManager::open_session`
+before `read_session_metadata`, and again in
+`import_prepared_session` after the copy (oracle
+`importFromJsonl` copies then `SessionManager.open` —
+agent-session-runtime.ts:361-405). Two new pins in
+`session_import_parity` (now 6/6):
+`session_from_import_accepts_a_v3_header_with_bad_timestamp` and
+`open_session_accepts_a_v3_header_without_cwd` — both fail with
+`invalid session header: jsonl decode error (Schema): is not a
+header` before the migration call, pass after. Oracle contract
+unchanged: type+id only; NaN→mtime (`buildSessionInfo` :743); falsy
+cwd guard (`getSessionHeaderCwd` :626). Known intentional divergence:
+Rust rewrites the source v3→v4 on open/import (same as CLI SES-006
+migration) whereas the oracle leaves a valid v3 file alone — no
+oracle test pins version-after-import.
+
+Also fixed mid-slice (gate blocker, not slice-AH code):
+`rpc_command_golden_transcript_matches_fixture` failed on clean HEAD
+because ancestor `/run/media/.../Projects/AGENTS.md` (mtime
+2026-09-23 17:45) leaked into the faux usage estimate via
+context-file discovery (`load_project_context_files` walks
+ancestors; `runtime_for_test_with_settings` did not pass
+`--no-context-files`). Actual tokensBefore drifted 5584 vs fixture
+5498 (+86); hermetic `--no-context-files` on the shared RPC test
+runtime then refreshed the fixture surgically (compact 5498→938,
+stats input 3052→772, cacheWrite 2743→463, total 5816→1256 — all
+host-independent). Golden green after the refresh; no other golden
+fields changed.
+
+Gate: session_import_parity 6/6 (+2 genuine RED), session_file_invalid 12/12, lib 918/918 (includes golden), pi-agent 276, pi-tui 409, pi-ai 487, restart 13/13, resources 11/11, flag 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2, session_id 1/1, export 5/5, export invalid 1/1, sb 13 suites, clippy all-targets 0 warnings (3 crates), fmt clean, diff clean, docs-lint 0 issues, conversion 100.00% (166/166). SES-012 note extended (pure-sdk bad-ts/missing-cwd accepted). Metrics unchanged (implementation 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Session slice AG: sdk read_session_metadata v4→v3 fallback (last updated 2026-09-23, committed `e8f275f`)
 
 Slice AG (oracle `importFromJsonl` copy→`SessionManager.open` type+id

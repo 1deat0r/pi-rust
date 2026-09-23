@@ -7,6 +7,30 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration
+
+Closed the slice AG follow-up (genuine RED 2/2): pure-sdk
+`open_session` / `import_prepared_session` now run
+`migrate_legacy_session_file` before `read_session_metadata`, so a
+v3 header with a bad `timestamp` or missing `cwd` is accepted the
+same way the CLI path already is (oracle type+id only; slice AF
+CLI pins stay green). Two new pins in session_import_parity (6/6).
+Intentional divergence noted: Rust rewrites v3→v4 on open/import
+(match SES-006 migration); oracle leaves valid v3 alone — no oracle
+pins version-after-import. Mid-slice gate blocker also fixed: RPC
+golden failed on clean HEAD because ancestor `Projects/AGENTS.md`
+(mtime today) leaked into faux usage via context-file discovery —
+hermeticized `runtime_for_test_with_settings` with
+`--no-context-files` and surgically refreshed the fixture numbers
+(5498→938 compact, stats 3052/2743/5816→772/463/1256). No row
+promoted (SES-012 note extended). Gate green: import 6/6, invalid
+12/12, lib 918 (golden ok), restart 13/13, resources 11/11, flag
+7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6,
+runtime 3/3, extensions 10/10, file safety 2/2, session_id 1/1,
+export 5/5, sb 13 suites, clippy 0, fmt, diff, conversion
+100.00% (166/166). Next: commit + push, then continue the parity
+sweep.
+
 ### Session slice AG — sdk read_session_metadata v4→v3 fallback
 
 Closed the sdk v3-import/open divergence (genuine RED 2/2): oracle

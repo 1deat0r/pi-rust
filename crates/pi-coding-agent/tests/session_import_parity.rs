@@ -11,6 +11,15 @@
 //! (agent-session-runtime.ts:361): a valid **v3** session header is
 //! accepted on import and open (oracle test
 //! agent-session-runtime.test.ts:229-245 imports a v3 header-only file).
+//!
+//! Slice AH closes the pure-sdk follow-up: oracle
+//! `parseSessionHeaderCandidate` validates type+id only, so a v3
+//! header with a malformed `timestamp` or a missing `cwd` still
+//! opens (oracle `_loadEntries` → `migrateToCurrentVersion` never
+//! rewrites version ≥ 3; `buildSessionInfo` NaN→mtime, session-cwd
+//! falsy guard). The CLI `--session` path already accepts both via
+//! `migrate_legacy_session_file` (slice AF pins); the pure-sdk path
+//! must too, before the strict storage load.
 
 use pi_coding_agent::core::sdk::SessionManager;
 
@@ -130,5 +139,70 @@ async fn open_session_accepts_a_v3_header() {
         .expect("v3 header must open");
     let metadata = session.get_metadata().await;
     assert_eq!(metadata.id, "opened-v3", "open adopts the v3 id");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Oracle type+id-only validation: bad `timestamp` does not refuse
+/// (session-manager.ts:568; `buildSessionInfo` NaN→mtime :743).
+/// CLI pins this via migration (session_file_invalid
+/// `session_flag_v3_header_with_bad_timestamp_still_opens`); the
+/// pure-sdk path must accept it too.
+#[tokio::test]
+async fn session_from_import_accepts_a_v3_header_with_bad_timestamp() {
+    let root = sandbox("v3-import-badts");
+    let session_dir = root.join("sessions");
+    let manager = SessionManager::new(
+        root.to_string_lossy().as_ref(),
+        session_dir.to_string_lossy().as_ref(),
+    );
+
+    let source = root.join("bad-ts.jsonl");
+    std::fs::write(
+        &source,
+        format!(
+            r#"{{"type":"session","version":3,"id":"badts-sdk","timestamp":"not-a-date","cwd":{}}}"#,
+            serde_json::to_string(&root.to_string_lossy()).unwrap()
+        )
+        .replace('\n', "")
+        + "\n",
+    )
+    .unwrap();
+
+    let session = manager
+        .session_from_import(&source, None)
+        .await
+        .expect("v3 bad-timestamp header must import");
+    let metadata = session.get_metadata().await;
+    assert_eq!(metadata.id, "badts-sdk", "import adopts the type+id header");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Same oracle acceptance for a header missing `cwd`
+/// (`getSessionHeaderCwd` non-string → undefined → process.cwd;
+/// session-cwd falsy empty guard).
+#[tokio::test]
+async fn open_session_accepts_a_v3_header_without_cwd() {
+    let root = sandbox("v3-open-nocwd");
+    let session_dir = root.join("sessions");
+    let manager = SessionManager::new(
+        root.to_string_lossy().as_ref(),
+        session_dir.to_string_lossy().as_ref(),
+    );
+
+    let source = root.join("no-cwd.jsonl");
+    std::fs::write(
+        &source,
+        r#"{"type":"session","version":3,"id":"nocwd-sdk","timestamp":"2025-01-01T00:00:00Z"}"#
+            .to_string()
+            + "\n",
+    )
+    .unwrap();
+
+    let session = manager
+        .open_session(&source)
+        .await
+        .expect("v3 no-cwd header must open");
+    let metadata = session.get_metadata().await;
+    assert_eq!(metadata.id, "nocwd-sdk", "open adopts the type+id header");
     let _ = std::fs::remove_dir_all(&root);
 }
