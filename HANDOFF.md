@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AE — bad-header refusal family (uncommitted)
+### Session slice AE — bad-header refusal family (committed + pushed)
 
 Oracle type+id validation (RED 3/3): migration skips id-less v3
 headers (no `migrate selected session` leak); metadata v3
@@ -16,8 +16,8 @@ flag 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive
 6/6, runtime 3/3, extensions 10/10, file safety 2/2, export 1/1,
 clippy 0 warnings, fmt, diff, docs-lint 0 issues, conversion
 100.00% (166/166). No row promoted (CLI-014/CLI-016/SES-006
-notes extended); metrics unchanged (58/318). Next: commit +
-push, then continue the sweep.
+notes extended); metrics unchanged (58/318). Committed
+`444e01d`, pushed, hashes match. Next: continue the sweep.
 
 ### Session slice AD — missing-path create + fork-missing Cannot-fork (committed + pushed)
 
