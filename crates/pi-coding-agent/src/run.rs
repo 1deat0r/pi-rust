@@ -1864,8 +1864,14 @@ pub(crate) fn metadata_from_session_path(
         return Err(session_file_refusal(path, intent));
     }
     if is_v3 {
-        let parsed = pi_agent::session::jsonl::parse_v3_header(header_line)
-            .map_err(|error| format!("parse session header {}: {error}", path.display()))?;
+        // Oracle `loadEntriesFromFile` validates only `type` + string
+        // `id`; a v3-shaped header that fails Rust's stricter parse
+        // yields no entries upstream → refusal family (friendly for
+        // open, Cannot-fork for fork).
+        let parsed = match pi_agent::session::jsonl::parse_v3_header(header_line) {
+            Ok(parsed) => parsed,
+            Err(_) => return Err(session_file_refusal(path, intent)),
+        };
         let modified_at = std::fs::metadata(path)
             .and_then(|metadata| metadata.modified())
             .ok()
@@ -1884,10 +1890,12 @@ pub(crate) fn metadata_from_session_path(
             metadata: parsed.metadata,
         });
     }
+    // A `kind: header` object without an id is not a `type: session`
+    // entry upstream (`loadEntriesFromFile` → []) → refusal family.
     let id = header
         .get("id")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("session {} header is missing id", path.display()))?;
+        .ok_or_else(|| session_file_refusal(path, intent))?;
     let modified_at = std::fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()

@@ -477,6 +477,17 @@ pub fn migrate_legacy_session_file(path: &Path) -> Result<bool, String> {
     if first_value.get("type").and_then(Value::as_str) != Some("session") {
         return Ok(false);
     }
+    // Only a header that passes the upstream session-header validation
+    // (`loadEntriesFromFile`: `type === "session"` + string `id`) is a
+    // migratable session. Anything else is left untouched — the open
+    // chain refuses it with the intent-appropriate diagnostic instead
+    // of a migration error.
+    if !first_value
+        .get("id")
+        .is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty()))
+    {
+        return Ok(false);
+    }
 
     let converted = convert_legacy_to_v4(&content)?;
     let file_name = path

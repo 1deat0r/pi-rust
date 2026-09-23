@@ -7,6 +7,21 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AE — bad-header refusal family
+
+Oracle `loadEntriesFromFile` validates only `type` + string `id`.
+Three fixes (RED 3/3): migration skips id-less v3 headers (file
+untouched, no migration-error leak); metadata v3 strict-parse
+failure → intent refusal; v4 missing-id → intent refusal. Three
+new pins (open friendly x2 + fork Cannot-fork); session_file_
+invalid now 10/10. Follow-up recorded: v3-bad-timestamp-with-id
+is oracle-accepted (needs lenient parse + missing-cwd audit).
+No row promoted (CLI-014/CLI-016/SES-006 notes extended). Gate
+green: target 10/10, lib 918, all prior targets, clippy 0
+warnings (two new doc warnings fixed in-slice), fmt, diff,
+conversion 100.00% (166/166). Next: commit + push, then
+continue the parity sweep.
+
 ### Session slice AD — missing-path create + fork-missing Cannot-fork
 
 Second slice-AA-family misattribution corrected (RED 2/2):

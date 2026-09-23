@@ -317,6 +317,103 @@ fn session_fork_missing_path_source_fails_closed_with_cannot_fork() {
     assert!(!source.exists(), "fork must not create the source");
 }
 
+/// Oracle `loadEntriesFromFile` header validation: a v3-shaped header
+/// without an id yields no entries. `_setSessionFile` then refuses with
+/// the friendly message. TDD RED: the strict v3 parse error currently
+/// leaks instead of the refusal family.
+#[test]
+fn session_flag_v3_header_without_id_refuses_with_friendly_message() {
+    let sandbox = Sandbox::new("v3-noid");
+    let session_file = sandbox.root.join("v3-no-id.jsonl");
+    fs::write(
+        &session_file,
+        "{\"type\":\"session\",\"version\":3,\"timestamp\":\"2025-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
+    )
+    .expect("write v3 header without id");
+
+    let output = sandbox.run(&["--session", session_file.to_str().unwrap(), "-p", "hi"]);
+
+    assert_eq!(output.status.code(), Some(1), "exit status: {output:?}");
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains(&format!(
+            "Error: Session file is not a valid pi session: {}",
+            session_file.display()
+        )),
+        "friendly refusal expected (oracle yields no entries): {diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("parse session header"),
+        "strict-parse error must not leak: {diagnostics}"
+    );
+}
+
+/// Same oracle contract for the v4 shape: a `kind: header` object is not
+/// a `type: session` entry, so upstream yields no entries → refusal.
+/// TDD RED: `header is missing id` leaks instead of the refusal family.
+#[test]
+fn session_flag_v4_header_without_id_refuses_with_friendly_message() {
+    let sandbox = Sandbox::new("v4-noid");
+    let session_file = sandbox.root.join("v4-no-id.jsonl");
+    fs::write(
+        &session_file,
+        "{\"kind\":\"header\",\"version\":4,\"createdAt\":1700000000000,\"cwd\":\"/tmp\"}\n",
+    )
+    .expect("write v4 header without id");
+
+    let output = sandbox.run(&["--session", session_file.to_str().unwrap(), "-p", "hi"]);
+
+    assert_eq!(output.status.code(), Some(1), "exit status: {output:?}");
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains(&format!(
+            "Error: Session file is not a valid pi session: {}",
+            session_file.display()
+        )),
+        "friendly refusal expected (oracle yields no entries): {diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("missing id"),
+        "id-extraction error must not leak: {diagnostics}"
+    );
+}
+
+/// Fork intent maps the same no-entries outcome to the Cannot-fork
+/// family (oracle `forkFrom` → `loadEntriesFromFile` → []).
+#[test]
+fn session_fork_v3_header_without_id_fails_closed_with_cannot_fork() {
+    let sandbox = Sandbox::new("fork-v3-noid");
+    let source = sandbox.root.join("fork-v3-no-id.jsonl");
+    fs::write(
+        &source,
+        "{\"type\":\"session\",\"version\":3,\"timestamp\":\"2025-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
+    )
+    .expect("write v3 header without id");
+
+    let output = sandbox.run(&[
+        "--fork",
+        source.to_str().unwrap(),
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "-p",
+        "hi",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "exit status: {output:?}");
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains(&format!(
+            "Cannot fork: source session file is empty or invalid: {}",
+            source.display()
+        )),
+        "oracle fork diagnostic expected: {diagnostics}"
+    );
+    assert!(!diagnostics.contains("parse session header"));
+}
+
 /// Recursively collect `.jsonl` files under `root`.
 fn jsonl_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut found = Vec::new();

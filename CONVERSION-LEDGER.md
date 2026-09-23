@@ -2,6 +2,47 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AE: bad-header refusal family (last updated 2026-09-23)
+
+Slice AE (oracle `loadEntriesFromFile` header validation —
+`type === "session"` + string `id` only; genuine TDD RED 3/3):
+headers that fail Rust's stricter extraction leaked the wrong
+error family. Oracle: any first-parseable line failing that
+two-field check yields `[]` entries → `_setSessionFile` refuses
+with the friendly message, `forkFrom` with `Cannot fork: source
+session file is empty or invalid`. Fixes: (1)
+`migrate_legacy_session_file` now skips (Ok(false), file
+untouched) when a `type: session` header lacks a non-empty
+string id — only upstream-validatable legacy sessions migrate;
+id-less headers fall to the open chain for refusal instead of
+erroring `migrate selected session: session header is missing
+id` (this fired first in RED, before metadata); (2)
+`metadata_from_session_path` v3 branch maps any
+`parse_v3_header` failure (missing id/cwd/timestamp, bad shape)
+to the intent refusal — the strict-parse diagnostic no longer
+leaks; (3) the v4 branch maps missing/`id` to the intent refusal
+(a `kind: header` object is not a `type: session` entry
+upstream). Three new pins in `session_file_invalid` (now 10/10):
+v3-no-id open → friendly + no parse-error leak; v4-no-id open →
+friendly + no id-leak; v3-no-id fork → Cannot-fork. Adjacent
+divergence recorded as follow-up: a v3 header with a *valid id
+but malformed timestamp* is ACCEPTED by the oracle (its check is
+type+id only; downstream falls back) while Rust still refuses —
+porting that needs lenient open-path parsing plus a
+missing-cwd-guard audit (empty-string stored cwd), not absorbed
+here. No test pinned the old messages (verified). Gate:
+session_file_invalid 10/10 (+3), lib 918/918, restart 13/13,
+import 2/2, session_id 1/1, cli_resources 11/11, flag 7/7,
+clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime
+3/3, extensions 10/10, file safety 2/2, export 1/1, clippy
+all-targets 0 warnings (3 crates, held — two new test-doc
+lazy-continuation warnings found and fixed in-slice), fmt clean,
+diff clean, docs-lint 0 issues, conversion 100.00% (166/166).
+No parity row promoted (CLI-014, CLI-016, SES-006 evidence notes
+extended; statuses held). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266,
+non-TUI overall 58/266, whole-product 58/318).
+
 ### Session slice AD: missing-path create + fork-missing Cannot-fork (last updated 2026-09-23)
 
 Slice AD (second misattribution corrected, same family as slice
