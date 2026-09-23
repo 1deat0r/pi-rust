@@ -2,6 +2,58 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AD: missing-path create + fork-missing Cannot-fork (last updated 2026-09-23)
+
+Slice AD (second misattribution corrected, same family as slice
+AA; genuine TDD RED 2/2): `--session <path-like, parent exists,
+file missing>` used to fail with `session not found: <path>` —
+a message invented by the Rust-flows sweep `2a9284b`
+(2026-08-26), never an oracle contract. Oracle
+`resolveSessionPath` never existence-checks path-like selectors;
+`_setSessionFile`'s else-branch preserves the explicit path
+(`newSession(); sessionFile = explicitPath`) and the first
+append materializes the file there — exit 0, turn runs. Port:
+`metadata_from_session_path` gains a missing-file branch — Open
+intent materializes a valid header at the explicit path (reuses
+slice Z's `initialize_empty_session_file`; parent must exist,
+mirroring Node `appendFileSync` ENOENT) then parses it back;
+Fork intent refuses with the `Cannot fork: source session file
+is empty or invalid` family (oracle `forkFrom` →
+`loadEntriesFromFile` returns [] for a missing file).
+`resolve_session_metadata`'s path branch drops the `is_file()`
+gate (existence is intent's business now); the id-lookup branch
+keeps `session not found` for bare ids (flag-matrix pin, both
+sides fail-closed, wording divergence pre-existing).
+`validate_explicit_session_file` now early-refuses Fork +
+path-like + missing (oracle throws at createSessionManager,
+ahead of model resolution) while Open still defers a missing
+path to full preparation — so a no-models failure happens
+before the header is written, matching the oracle's lazy
+first-append materialization (clean-home no-file invariant
+holds). Rewrote `missing_session_path_reports_a_deterministic_error`
+into `missing_session_path_creates_at_the_explicit_path_like_oracle`
+(the old pin asserted the invented diagnostic; provenance
+recorded in the test comment); added
+`session_fork_missing_path_source_fails_closed_with_cannot_fork`.
+Edge notes, unobserved by pins: an empty prompt (`-p ""`)
+leaves a header-only file where the oracle would materialize
+nothing until append; a directory-as-path Open fails at read
+(EISDIR-class) where the oracle fails inside loadEntries.
+Missing-PARENT `--session` keeps failing closed with no
+directory (restart pin message-agnostic — now surfaces as the
+initialize failure at prepare time instead of "session not
+found"). Gate: cli_resources 11/11 (rewritten pin green),
+session_file_invalid 7/7 (+1), restart 13/13, flag 7/7,
+clean_home 12/12, import 2/2, session_id_readonly 1/1, print
+14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions 10/10,
+file safety 2/2, export 1/1, coding-agent lib 918/918, clippy
+all-targets 0 warnings (3 crates, held), fmt clean, diff clean,
+conversion 100.00% (166/166). No parity row promoted (CLI-014 +
+CLI-016 evidence notes extended; statuses held). Metrics
+unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Session slice AC: first-parseable header scan across the open chain (last updated 2026-09-23)
 
 Slice AC (slice-Z follow-up closed; oracle file-operations

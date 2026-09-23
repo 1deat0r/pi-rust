@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AD — missing-path create + fork-missing Cannot-fork (uncommitted)
+
+Slice-AA-family misattribution corrected (RED 2/2):
+`--session <missing, parent exists>` creates at the explicit
+path (oracle `_setSessionFile` else-branch; old pin from
+`2a9284b` asserted invented `session not found` — rewritten with
+provenance); `--fork <path-like missing>` refuses early with
+oracle `Cannot-fork` (loadEntries=[] at createSessionManager
+order). `metadata_from_session_path` missing branch: Open
+initializes header (slice Z helper), Fork refuses;
+`resolve_session_metadata` path branch drops `is_file` gate;
+id-lookup keeps `session not found` (flag-matrix). Open defers
+creation to prepare — no-models fails before any file (oracle
+lazy parity). Edge notes in ledger: empty-prompt header-only
+file; dir-as-path EISDIR-class. Gates: cli_resources 11/11,
+session_file_invalid 7/7, restart 13/13, flag 7/7, clean_home
+12/12, import 2/2, session_id 1/1, print 14/14, json 9/9,
+exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2,
+export 1/1, lib 918, clippy 0 warnings, fmt, diff, conversion
+100.00% (166/166). No row promoted (CLI-014 + CLI-016 notes
+extended); metrics unchanged (58/318). Next: commit + push,
+then continue the sweep.
+
 ### Session slice AC — first-parseable header scan (committed + pushed)
 
 Slice-Z follow-up closed (oracle file-operations leading-lines +

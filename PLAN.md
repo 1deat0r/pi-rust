@@ -7,6 +7,22 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AD — missing-path create + fork-missing Cannot-fork
+
+Second slice-AA-family misattribution corrected (RED 2/2):
+`--session <missing, parent exists>` now creates at the explicit
+path per oracle `_setSessionFile` else-branch (old "session not
+found" pin was a 2a9284b Rust invention — rewritten with
+provenance); `--fork <path-like missing>` now refuses with
+oracle `Cannot-fork` early at validate (createSessionManager
+order). Open defers missing-path creation to prepare so
+no-models fails before any file appears (oracle lazy parity).
+No row promoted (CLI-014 + CLI-016 notes extended). Gate green:
+cli_resources 11/11, session_file_invalid 7/7, restart 13/13,
+flag 7/7, clean_home 12/12, all prior targets green, lib 918,
+clippy 0 warnings, fmt, diff, conversion 100.00% (166/166).
+Next: commit + push, then continue the parity sweep.
+
 ### Session slice AC — first-parseable header scan across the open chain
 
 Closed the slice-Z scan-ahead follow-up (genuine RED 4/4): new

@@ -322,7 +322,13 @@ fn no_session_keeps_a_successful_run_ephemeral() {
 }
 
 #[test]
-fn missing_session_path_reports_a_deterministic_error() {
+fn missing_session_path_creates_at_the_explicit_path_like_oracle() {
+    // Oracle `_setSessionFile` else-branch (session-manager.ts): an
+    // explicit `--session` path that does not exist yet is preserved —
+    // the first append materializes the file there. resolveSessionPath
+    // never existence-checks path-like selectors. (The earlier
+    // `session not found` fail-closed pin was a Rust invention from the
+    // 2026-08-26 flows sweep; corrected 2026-09-23.)
     let sandbox = Sandbox::new("missing-session");
     let cwd = sandbox.root.join("proj");
     fs::create_dir_all(&cwd).unwrap();
@@ -341,12 +347,22 @@ fn missing_session_path_reports_a_deterministic_error() {
             "hello",
         ],
     );
-    assert_eq!(out.status.code(), Some(1));
     assert_eq!(
-        sandbox.stderr(&out),
-        format!("session not found: {}\n", missing.display())
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        sandbox.stderr(&out)
     );
-    assert!(sandbox.stdout(&out).is_empty());
+    assert!(sandbox.stdout(&out).contains("faux response to: hello"));
+    assert!(
+        missing.is_file(),
+        "session file must materialize at the explicit path"
+    );
+    let contents = fs::read_to_string(&missing).expect("read created session");
+    assert!(
+        contents.contains("hello"),
+        "prompt must persist: {contents}"
+    );
 }
 
 #[test]

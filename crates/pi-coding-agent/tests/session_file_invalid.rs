@@ -284,6 +284,39 @@ fn session_fork_non_session_source_fails_closed_preserving_content() {
     );
 }
 
+/// Oracle `forkFrom`: a path-like `--fork` source that does not exist
+/// refuses with the same Cannot-fork family (`loadEntriesFromFile`
+/// returns [] for a missing file) — early, at selector resolution, not
+/// as a generic "session not found".
+#[test]
+fn session_fork_missing_path_source_fails_closed_with_cannot_fork() {
+    let sandbox = Sandbox::new("fork-missing");
+    let source = sandbox.root.join("no-such-source.jsonl");
+
+    let output = sandbox.run(&[
+        "--fork",
+        source.to_str().unwrap(),
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "-p",
+        "hi",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "exit status: {output:?}");
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains(&format!(
+            "Cannot fork: source session file is empty or invalid: {}",
+            source.display()
+        )),
+        "oracle fork diagnostic missing: {diagnostics}"
+    );
+    assert!(!source.exists(), "fork must not create the source");
+}
+
 /// Recursively collect `.jsonl` files under `root`.
 fn jsonl_files(root: &std::path::Path) -> Vec<PathBuf> {
     let mut found = Vec::new();

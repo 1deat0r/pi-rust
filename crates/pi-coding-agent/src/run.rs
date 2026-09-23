@@ -1613,10 +1613,11 @@ pub(crate) async fn resolve_session_metadata(
     let path_like = session_selector_is_path_like(selector);
 
     if path_like {
-        if requested_path.is_file() {
-            return metadata_from_session_path(&requested_path, cwd, intent);
-        }
-        return Err(format!("session not found: {selector}"));
+        // Path-like selectors never existence-check (oracle
+        // `resolveSessionPath`): Open materializes a missing explicit
+        // path; Fork refuses a missing source with the Cannot-fork
+        // family (oracle `forkFrom`).
+        return metadata_from_session_path(&requested_path, cwd, intent);
     }
 
     let local_sessions = repo
@@ -1662,6 +1663,13 @@ pub(crate) fn validate_explicit_session_file(
     }
     let path = resolve_session_selector_path(selector, cwd);
     if !path.is_file() {
+        // Oracle order: `forkFrom` throws at createSessionManager for a
+        // missing source (`loadEntriesFromFile` → []), ahead of model
+        // resolution. Open defers a missing path to full preparation,
+        // where `_setSessionFile` creates it — no early failure.
+        if intent == SessionFileIntent::Fork {
+            return Err(session_file_refusal(&path, intent));
+        }
         return Ok(());
     }
     crate::core::session_migration::migrate_legacy_session_file(&path)?;
@@ -1811,6 +1819,19 @@ pub(crate) fn metadata_from_session_path(
     cwd: &str,
     intent: SessionFileIntent,
 ) -> Result<SessionMetadata, String> {
+    if !path.exists() {
+        match intent {
+            SessionFileIntent::Open => {
+                // Oracle `_setSessionFile` else-branch: an explicit path
+                // that does not exist is preserved — materialize a valid
+                // header there (the parent directory must exist), then
+                // read it back through the normal parse.
+                initialize_empty_session_file(path, cwd)?;
+                return metadata_from_session_path(path, cwd, intent);
+            }
+            SessionFileIntent::Fork => return Err(session_file_refusal(path, intent)),
+        }
+    }
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("read session {}: {error}", path.display()))?;
     if content.is_empty() {
