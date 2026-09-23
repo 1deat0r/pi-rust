@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AD — missing-path create + fork-missing Cannot-fork (uncommitted)
+### Session slice AD — missing-path create + fork-missing Cannot-fork (committed + pushed)
 
 Slice-AA-family misattribution corrected (RED 2/2):
 `--session <missing, parent exists>` creates at the explicit
@@ -22,8 +22,8 @@ session_file_invalid 7/7, restart 13/13, flag 7/7, clean_home
 exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2,
 export 1/1, lib 918, clippy 0 warnings, fmt, diff, conversion
 100.00% (166/166). No row promoted (CLI-014 + CLI-016 notes
-extended); metrics unchanged (58/318). Next: commit + push,
-then continue the sweep.
+extended); metrics unchanged (58/318). Committed `69791c8`,
+pushed, hashes match. Next: continue the sweep.
 
 ### Session slice AC — first-parseable header scan (committed + pushed)
 
