@@ -1,102 +1,97 @@
 # Codex Operating Protocol — pi-rust
 
-Every Codex session working in this repository follows this file. The goal is
-that another session can resume immediately from the repository documents,
-without relying on pane history or memory.
+Every agent session working in this repository follows this file. The human
+is the prompter; the agent owns implementation, gates, docs, and push
+hygiene. Goal: another session resumes from the repository alone.
 
-## Required startup
+## Required startup (thin)
 
-Before changing code, read:
-
-- `CONVERSION-LEDGER.md` — authoritative conversion checklist.
-- `PLAN.md` — phase status, parity matrix, evidence, and next work.
-- `HANDOFF.md` — latest checkpoint, tests, blockers, and resume point.
-
-Run the Rust-native progress/audit checker before relying on a percentage:
+1. Read `HANDOFF.md` **top section only** (latest checkpoint + next task).
+2. Skim `PLAN.md` top slice if HANDOFF points at open work.
+3. Treat `CONVERSION-LEDGER.md` as append-only evidence (do not rewrite
+   history; insert new slices at the top under the active day goal).
+4. Run the progress checker before trusting any percentage:
 
 ```bash
 cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
 ```
 
-## Documentation map (2026-09-17)
+Do not re-read multi-thousand-line archives at startup
+(`docs/*-ARCHIVE-*.md` are frozen).
+
+## Documentation map
 
 Living docs (edit these; `README.md` + this file are markdownlint-clean
-via `bash scripts/docs-lint.sh`; tracked-file size is enforced by
+via `bash scripts/docs-lint.sh`; tracked-file size via
 `bash scripts/size-gate.sh` / pre-commit):
 
-- `README.md` — project status; numbers come from the audits, never memory.
+- `README.md` — public status; numbers come from audits, never memory.
 - `AGENTS.md` (this file) — session protocol.
-- `PLAN.md` — active planning window only (older checkpoints frozen in
+- `PLAN.md` — active planning window only (old checkpoints →
   `docs/PLAN-ARCHIVE-2026-08.md`).
-- `HANDOFF.md` — resume context only (older checkpoints frozen in
-  `docs/HANDOFF-ARCHIVE-2026-08.md`).
+- `HANDOFF.md` — resume context only (old → `docs/HANDOFF-ARCHIVE-2026-08.md`).
 - `CONVERSION-LEDGER.md` — per-slice evidence log (append-only).
-- `GATES.md` — frozen 2026-08-26/27 progress record; new work goes to the
-  ledger, not here.
+- `GATES.md` / `GATES-*.md` — frozen or per-slice gate ledgers; new work
+  goes to the ledger, not a rewritten frozen file.
 
-Machine-read registers (edit rows only; never reformat history):
+Machine-read registers (edit rows only):
 
 - `docs/NON-TUI-PARITY-STATUS.md`, `docs/TUI-PARITY-STATUS.md`,
   `docs/EXHAUSTIVE-PARITY-INVENTORY.md`, `docs/PARITY-DASHBOARD.md`.
 
-Frozen archives (do not edit except to fix corruption):
-`docs/*-ARCHIVE-*.md`, the retired-narrative section of
+Frozen archives: `docs/*-ARCHIVE-*.md`, retired narrative in
 `docs/PARITY-DASHBOARD.md`.
 
-## Required end-of-task documentation gate
+## End-of-task documentation (use the helper)
 
-A Codex task is not complete until this gate passes, even when the task ends in
-a test failure, a blocker, or a decision not to change code.
+Write the slice body **once**. Prefer:
 
-1. Update `CONVERSION-LEDGER.md` for every task-status change. Mark a task
-   complete only with its evidence tier (`unit`, `mock`, or `live`) and the
-   exact command or fixture that proves it. Never check off work merely because
-   similarly named code exists.
-2. Run `cargo run -p pi-coding-agent --offline --bin conversion_audit -- all`
-   and use its exact `Conversion progress:` output as the current source-ledger
-   percentage. If the ledger header disagrees, fix the stale summary before
-   ending the task.
-3. Update `PLAN.md` with the current progress, phase/criterion evidence,
-   issues found, and the next dependency-safe action.
-4. Update `HANDOFF.md` with the current branch/worktree state, the exact tests
-   and checks run, blockers, completed milestone(s), remaining work, and the
-   same progress-checker output. Keep `PLAN.md`, `HANDOFF.md`, and the ledger
-   synchronized.
-5. If no ledger item changed, explicitly record that fact and the current
-   checker output in `HANDOFF.md`; verify the other two documents still agree.
-   Do not fabricate a checkbox solely to create a diff.
-6. Run `git diff --check` and the narrowest relevant tests. Do not report a
-   task as complete while documentation or validation is stale.
+```bash
+bash scripts/checkpoint.sh \
+  --title "Session slice AJ: short name" \
+  --body-file - <<'EOF'
+One-paragraph what/why, oracle refs, RED/GREEN evidence, intentional
+divergences, exact gate commands+counts, next dependency-safe action.
+EOF
+```
 
-The final Codex response must name the documentation files updated or verified,
-quote the progress result, list the exact validation commands, and identify the
-next task or blocker. A session that stops before this gate must leave a clear
-partial-work checkpoint in `HANDOFF.md`.
+`checkpoint.sh` prepends the same body to `CONVERSION-LEDGER.md`,
+`PLAN.md`, and `HANDOFF.md`, runs size-gate + docs-lint, stages the trio,
+commits, and (via post-commit) pushes + verifies hashes. Pass
+`--register-note` only when a non-TUI register note is required
+(product-source slices). Pass `--dry-run` to preview. Manual path: edit
+the three docs in the same shape, then still commit through the hooks.
 
-## Local and remote commit gate
+A task is complete only when:
 
-For every completed logical task or checkpoint:
+1. Ledger (or checkpoint body) records status with evidence tier
+   (`unit` / `mock` / `live`) and the exact command that proves it.
+2. `conversion_audit -- progress` matches what the staged docs claim.
+3. PLAN next action and HANDOFF resume point are current.
+4. `git diff --check` clean; narrowest relevant tests green.
+5. Final reply names docs touched, quotes `Conversion progress:`,
+   lists validation commands, and names next task or blocker.
 
-1. Update the required project documents and run the relevant validation.
-2. Create one focused local commit; do not batch unrelated tasks.
-3. Immediately push that commit to the configured upstream branch.
-4. Verify synchronization with both `git rev-parse HEAD` and
-   `git ls-remote origin refs/heads/<branch>`. Do not declare the checkpoint
-   complete until the hashes match.
-5. If authentication, network, permissions, or CI prevents the push, keep the
-   local commit intact, record the exact blocker in `HANDOFF.md`, and stop
-   claiming local/remote parity. Do not rewrite the remote URL with a secret,
-   skip the commit, or silently continue accumulating unpublished commits.
+If no ledger item changed, say so explicitly in the HANDOFF top section
+with the current checker output — do not fabricate a checkbox.
 
-A remote push is part of completion, not an optional cleanup step. This rule
-applies even when the task is documentation-only. Use the existing `origin`
-remote and current branch unless the user explicitly changes the target.
+## Local ↔ remote sync (automatic)
+
+1. `.githooks/post-commit` pushes every normal commit immediately and
+   verifies `git rev-parse HEAD` == `git ls-remote origin refs/heads/<branch>`.
+2. On push/auth/network failure the local commit stays; the reason is
+   written to `.git/PUSH_BLOCKED`. **Never claim sync while that file
+   exists.** Remove it only after a verified push.
+3. `checkpoint.sh` fails if `PUSH_BLOCKED` remains or hashes diverge.
+4. `PI_SKIP_PUSH=1` is an emergency local-only escape (record it in
+   HANDOFF if used). Do not leave work unpushed across sessions.
+5. One focused commit per logical unit; never batch unrelated tasks.
+   Enable hooks for a clone with `git config core.hooksPath .githooks`.
 
 ## Engineering rules
 
-- Preserve existing user changes; never use broad reset or revert commands.
-- Use TDD and upstream tests as the parity oracle.
-- Keep evidence tiers explicit and record intentional divergences in `PLAN.md`.
-- Build/test before committing; never commit a red build.
-- Follow the existing one-logical-unit-per-commit and push-after-checkpoint
-  directives recorded in the handoff.
+- Preserve user changes; no broad reset/revert.
+- TDD + pinned upstream tests as the parity oracle.
+- Explicit evidence tiers; intentional divergences recorded in PLAN.
+- Never commit a red build.
+- Size-gate ceilings are load-bearing (600000 B / 13000 `.rs` lines).

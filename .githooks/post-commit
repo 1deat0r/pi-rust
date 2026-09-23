@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# post-commit: every successful commit is pushed immediately so local
+# git and GitHub stay in sync. On failure the local commit remains
+# intact and .git/PUSH_BLOCKED records why; never claim sync then.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root"
+
+git_dir="$(git rev-parse --git-dir)"
+blocker="$git_dir/PUSH_BLOCKED"
+
+# Operator escape hatch (local debugging only — not for normal work).
+if [[ "${PI_SKIP_PUSH:-0}" == "1" ]]; then
+  echo "post-commit: PI_SKIP_PUSH=1 — push skipped (local HEAD not verified against origin)" >&2
+  exit 0
+fi
+
+# Do not push intermediate commits during rebase/am/cherry-pick; the
+# final operation (or the next normal commit) will push once done.
+if [[ -d "$git_dir/rebase-merge" || -d "$git_dir/rebase-apply" ]]; then
+  exit 0
+fi
+if [[ -f "$git_dir/CHERRY_PICK_HEAD" || -f "$git_dir/REVERT_HEAD" ]]; then
+  exit 0
+fi
+# During an in-progress merge, wait for the merge commit.
+if [[ -f "$git_dir/MERGE_HEAD" ]]; then
+  exit 0
+fi
+
+# No remote / detached HEAD with no branch: cannot sync; record if remote missing.
+if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  # Try origin/<current-branch> explicitly.
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$branch" == "HEAD" ]]; then
+    echo "post-commit: detached HEAD — not pushing" >"$blocker"
+    exit 0
+  fi
+  if ! git remote get-url origin >/dev/null 2>&1; then
+    echo "post-commit: no origin remote — not pushing" >"$blocker"
+    exit 0
+  fi
+  # First push establishes upstream.
+  if ! git push -u origin "$branch" >/dev/null 2>"$git_dir/push.err"; then
+    {
+      echo "post-commit: push -u origin $branch failed ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+      cat "$git_dir/push.err" 2>/dev/null || true
+    } >"$blocker"
+    echo "post-commit: PUSH FAILED — local commit kept; see $blocker" >&2
+    exit 0
+  fi
+else
+  if ! git push >/dev/null 2>"$git_dir/push.err"; then
+    {
+      echo "post-commit: git push failed ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+      cat "$git_dir/push.err" 2>/dev/null || true
+    } >"$blocker"
+    echo "post-commit: PUSH FAILED — local commit kept; see $blocker" >&2
+    exit 0
+  fi
+fi
+
+# Verify local HEAD == remote branch tip.
+branch="$(git rev-parse --abbrev-ref HEAD)"
+local_head="$(git rev-parse HEAD)"
+remote_head="$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | awk '{print $1; exit}')"
+if [[ -z "$remote_head" || "$local_head" != "$remote_head" ]]; then
+  {
+    echo "post-commit: hash mismatch after push ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+    echo "local=$local_head remote=${remote_head:-<none>} branch=$branch"
+  } >"$blocker"
+  echo "post-commit: PUSH VERIFY FAILED — see $blocker" >&2
+  exit 0
+fi
+
+rm -f "$blocker"
+echo "post-commit: pushed and verified $branch == $local_head"

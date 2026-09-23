@@ -36,11 +36,22 @@ fi
 # Workflow-infrastructure changes (.githooks, scripts, lint config, CI) carry
 # no product behavior and are exempt from the checkpoint-doc bundle.
 requires_docs=0
+needs_register=0
 while IFS= read -r path; do
   case "$path" in
-    README.md|PLAN.md|CONVERSION-LEDGER.md|HANDOFF.md|AGENTS.md|GATES.md|.githooks/*|.github/*|scripts/*|.markdownlint-cli2.jsonc|.github/workflows/*|docs/*)
+    README.md|PLAN.md|CONVERSION-LEDGER.md|HANDOFF.md|AGENTS.md|GATES.md|GATES-*.md|.githooks/*|.github/*|scripts/*|.markdownlint-cli2.jsonc|.github/workflows/*|docs/*)
       # Checkpoint docs, workflow infra, registers, dashboard, archives:
       # none of these is product source, so none forces the bundle alone.
+      ;;
+    crates/*)
+      # Product source always needs the checkpoint trio.
+      requires_docs=1
+      needs_register=1
+      ;;
+    Cargo.toml|Cargo.lock|rust-toolchain*)
+      # Workspace/build config: trio only; register only if metrics moved
+      # (register is an acceptance source — not forced for profile/lint edits).
+      requires_docs=1
       ;;
     *)
       requires_docs=1
@@ -48,23 +59,26 @@ while IFS= read -r path; do
   esac
 done <<< "$staged_files"
 
-# The non-TUI register is an acceptance source, not ordinary documentation.
-# Any change to a live register row must carry the synchronized project
-# checkpoint documents too. (Frozen archives — docs/*-ARCHIVE-*.md — and the
-# dashboard's retired-narrative section are history, not acceptance sources:
-# staging them must not force the checkpoint bundle.)
-if grep -Fxq "docs/NON-TUI-PARITY-STATUS.md" <<< "$staged_files"; then
+# The non-TUI register is an acceptance source. Staging it forces the full
+# bundle (it carries live metrics). Metric-carrier edits also need it.
+if grep -Fxq "docs/NON-TUI-PARITY-STATUS.md" <<< "$staged_files" \
+  || grep -Fxq "docs/TUI-PARITY-STATUS.md" <<< "$staged_files" \
+  || grep -Fxq "docs/PARITY-DASHBOARD.md" <<< "$staged_files" \
+  || grep -Fxq "README.md" <<< "$staged_files"; then
   requires_docs=1
+  # README alone does not require the register staged unless rows/metrics
+  # actually changed — carriers are checked for metric sync below.
 fi
 
 if [[ "$requires_docs" -eq 1 ]]; then
-  # Bundle rule (2026-09-18 fix): a source change is only commit-ready with
-  # the checkpoint docs staged. Only docs whose content actually changed in
-  # this commit are required — unchanged files stage as no-ops and must not
-  # block. README.md always carries the machine-checked status block, so a
-  # source change without a README content change stages it only if metrics
-  # moved (checked below); otherwise the checkpoint trio suffices.
-  required_docs=(PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/NON-TUI-PARITY-STATUS.md)
+  # Bundle rule (2026-09-18 fix, 2026-09-23 register scoping): a source
+  # change is only commit-ready with the checkpoint trio staged. The
+  # non-TUI register is required only when product source or a register
+  # file itself is staged (needs_register / staged register).
+  required_docs=(PLAN.md CONVERSION-LEDGER.md HANDOFF.md)
+  if [[ "$needs_register" -eq 1 ]] || grep -Fxq "docs/NON-TUI-PARITY-STATUS.md" <<< "$staged_files"; then
+    required_docs+=(docs/NON-TUI-PARITY-STATUS.md)
+  fi
   for doc in "${required_docs[@]}"; do
     if ! grep -Fxq "$doc" <<< "$staged_files"; then
       echo "pre-commit: implementation changes require staged $doc" >&2
@@ -72,17 +86,16 @@ if [[ "$requires_docs" -eq 1 ]]; then
     fi
   done
 
-  # Metric-sync rule: the bundle above fires only when a carrier file is
-  # staged. Carriers of the full metric set are README.md plus the
-  # registers and dashboard (PLAN/HANDOFF/CONVERSION-LEDGER are
-  # append-only logs — archived snapshots are never rewritten). The
-  # unconditional carrier checks below enforce sync on every commit.
+  # Metric-sync rule: carriers of progress are README + registers + dashboard.
+  # Only enforce conversion-progress presence in staged carrier docs.
   progress_output="$("$CARGO" run -p pi-coding-agent --offline --quiet --bin conversion_audit -- progress)"
   progress_percent="$(sed -E 's/^Conversion progress: ([0-9]+\.[0-9]+)%.*/\1%/p' <<< "$progress_output")"
   if [[ -z "$progress_percent" ]]; then
     echo "pre-commit: unable to parse conversion-progress output" >&2
     exit 1
   fi
+  # Checkpoint trio always carries progress once staged (they must agree
+  # with the audit). Registers only when staged.
   for doc in PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/NON-TUI-PARITY-STATUS.md; do
     if grep -Fxq "$doc" <<< "$staged_files" && ! grep -Fq "$progress_percent" "$doc"; then
       echo "pre-commit: staged $doc does not contain current progress $progress_percent" >&2
