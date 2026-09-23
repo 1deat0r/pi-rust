@@ -28,8 +28,8 @@ promoted (SES-012 note extended). Gate green: import 6/6, invalid
 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6,
 runtime 3/3, extensions 10/10, file safety 2/2, session_id 1/1,
 export 5/5, sb 13 suites, clippy 0, fmt, diff, conversion
-100.00% (166/166). Next: commit + push, then continue the parity
-sweep.
+100.00% (166/166). Committed `4c1d372` + pushed. Next: continue
+the parity sweep.
 
 ### Session slice AG — sdk read_session_metadata v4→v3 fallback
 

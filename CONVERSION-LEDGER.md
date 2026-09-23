@@ -41,7 +41,8 @@ stats input 3052→772, cacheWrite 2743→463, total 5816→1256 — all
 host-independent). Golden green after the refresh; no other golden
 fields changed.
 
-Gate: session_import_parity 6/6 (+2 genuine RED), session_file_invalid 12/12, lib 918/918 (includes golden), pi-agent 276, pi-tui 409, pi-ai 487, restart 13/13, resources 11/11, flag 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2, session_id 1/1, export 5/5, export invalid 1/1, sb 13 suites, clippy all-targets 0 warnings (3 crates), fmt clean, diff clean, docs-lint 0 issues, conversion 100.00% (166/166). SES-012 note extended (pure-sdk bad-ts/missing-cwd accepted). Metrics unchanged (implementation 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+Gate: session_import_parity 6/6 (+2 genuine RED), session_file_invalid 12/12, lib 918/918 (includes golden), pi-agent 276, pi-tui 409, pi-ai 487, restart 13/13, resources 11/11, flag 7/7, clean_home 12/12, print 14/14, json 9/9, exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2, session_id 1/1, export 5/5, export invalid 1/1, sb 13 suites, clippy all-targets 0 warnings (3 crates), fmt clean, diff clean, docs-lint 0 issues, conversion 100.00% (166/166). SES-012 note extended (pure-sdk bad-ts/missing-cwd accepted). Register pin count corrected to
+session_import_parity 6/6. Metrics unchanged (implementation 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
 
 ### Session slice AG: sdk read_session_metadata v4→v3 fallback (last updated 2026-09-23, committed `e8f275f`)
 

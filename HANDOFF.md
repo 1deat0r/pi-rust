@@ -26,7 +26,8 @@ warnings, fmt, diff, docs-lint 0 issues, conversion 100.00%
 (166/166). Metrics unchanged (58/318). SES-012 note extended.
 Changed files: sdk.rs, session_import_parity.rs, rpc.rs,
 command_transcript.json + this/PLAN/ledger. Committed `4c1d372`,
-pushed, hashes match. Next: continue the sweep.
+pushed, hashes match. SES-012 pin count in the register corrected to
+6/6 after the handoff mark. Next: continue the sweep.
 
 ### Session slice AG — sdk read_session_metadata v4→v3 fallback (committed + pushed)
 
