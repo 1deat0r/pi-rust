@@ -23,6 +23,14 @@ if [[ -z "$staged_files" ]]; then
   exit 0
 fi
 
+# Disk/source size gate runs first (cheap, fails fast): reject oversized
+# tracked files, staged build artifacts, and accidental binaries before any
+# cargo audit builds.
+if ! bash scripts/size-gate.sh; then
+  echo "pre-commit: size-gate failed" >&2
+  exit 1
+fi
+
 # A source/configuration change is only commit-ready when the durable project
 # handoff is part of the same checkpoint. README.md is also the GitHub README.
 # Workflow-infrastructure changes (.githooks, scripts, lint config, CI) carry

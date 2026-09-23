@@ -454,7 +454,12 @@ recorded rather than hidden.
 The repository pre-commit hook enforces that implementation commits stage the
 README, plan, ledger, and handoff together, validates the conversion progress
 checker, and attempts to sync the GitHub repository description when `gh` is
-authenticated. Enable it for a clone with:
+authenticated. It also runs `scripts/size-gate.sh` first: tracked files must
+stay under 600000 bytes (`.rs` sources under 13000 lines), staged
+`target/`/`rust_out`/object binaries are rejected, and tracked ELF/PE
+payloads fail outside fixture paths. Workspace `[profile.dev]` uses
+`debug = "line-tables-only"` and `incremental = false` so test binaries do
+not re-inflate `target/` past ~50G. Enable the hook for a clone with:
 
 ```bash
 git config core.hooksPath .githooks

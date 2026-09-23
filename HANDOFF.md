@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AI — workspace size-bloat cleanup + size-gate pre-commit (committed + pushed)
+
+Disk fix + prevention: pre-state `target/` ~50G (deps 37G of ~400MB
+test bins, incremental 13G, 136 files >100MB / 34.7GB). Actions:
+`rm -rf target/debug/incremental` + `cargo clean` (37.1GiB);
+`[profile.dev]` → `debug = "line-tables-only"`,
+`incremental = false`; new `scripts/size-gate.sh` (600000B /
+13000-line `.rs` ceilings, staged `target`/`rust_out`/binary reject,
+tracked ELF/PE magic reject) called first from
+`.githooks/pre-commit`. Post-state: `target` ~3.5G, 0 files >200MB,
+largest bin 155MB. Negative ceiling test exits 1. No parity row
+promoted; metrics unchanged (implementation 111/266, evidence
+107/266, runtime 59/266, non-TUI 58/266, whole-product 58/318).
+Gates: size-gate OK + neg exit 1, clippy 0 (3 crates), fmt, diff,
+docs-lint 0 issues, conversion 100.00% (166/166), lib 918,
+pi-agent 276, pi-tui 409 (parallel flake re-run green solo ×2),
+pi-ai 487, restart 13/13, import 6/6, resources 11/11, flag 7/7,
+clean_home 12/12, print 14/14, json 9/9, config 5/5, exhaustive
+6/6, runtime 3/3, extensions 10/10, file safety 2/2, session_id
+1/1, invalid 12/12, export 5/5, export invalid 1/1, sb 13 suites.
+Changed files: Cargo.toml, .githooks/pre-commit, scripts/size-gate.sh
++ this/PLAN/ledger. Next: continue the sweep.
+
 ### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration (committed + pushed)
 
 Closes slice AG follow-up (genuine RED 2/2): pure-sdk

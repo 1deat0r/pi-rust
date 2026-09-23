@@ -7,6 +7,21 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AI — workspace size-bloat cleanup + size-gate pre-commit
+
+`target/` hit ~50G (deps ~37G of ~400MB test binaries + incremental
+~13G). Cleaned disk (`cargo clean` 37.1GiB after dropping
+incremental), hardened `[profile.dev]` to
+`debug = "line-tables-only"` + `incremental = false` (test profile
+inherits), and added `scripts/size-gate.sh` (600KB tracked-file cap,
+13000-line `.rs` cap, staged artifact/binary reject) wired first in
+`.githooks/pre-commit`. Post-gate: `target` ~3.5G, largest bin
+155MB, 0 files >200MB. Negative path exits 1. No parity row
+promoted; metrics unchanged (111/107/59/58/58, conversion 100.00%
+(166/166)). Gate green: size-gate + neg, clippy 0, fmt, diff,
+docs-lint 0, all package/integration suites listed in the ledger.
+Next: commit + push, then continue the parity sweep.
+
 ### Session slice AH — pure-sdk v3 bad-ts/missing-cwd open+import via migration
 
 Closed the slice AG follow-up (genuine RED 2/2): pure-sdk

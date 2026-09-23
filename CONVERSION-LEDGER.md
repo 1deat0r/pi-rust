@@ -2,6 +2,37 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Session slice AI: workspace size-bloat cleanup + size-gate pre-commit (last updated 2026-09-23)
+
+Infrastructure slice (not a parity-row change): `target/` had grown to
+~50G (debug deps ~37G of ~400MB test binaries + incremental cache
+~13G; 136 files >100MB totaling ~34.7GB). Root cause: full debuginfo
+on every test binary under inherited `profile.test` plus incremental
+enabled. Fix: (1) `rm -rf target/debug/incremental` then
+`cargo clean` (reclaimed 37.1GiB; 6480 files); (2) workspace
+`[profile.dev]` now `debug = "line-tables-only"` and
+`incremental = false` (`profile.test` inherits `profile.dev`);
+(3) new `scripts/size-gate.sh` (max tracked file 600000B,
+max `.rs` lines 13000, reject staged `target/`/`rust_out`/object
+binaries, reject tracked ELF/PE/Mach-O magic outside fixture
+paths; ceilings overridable only via `PI_MAX_FILE_BYTES` /
+`PI_MAX_RS_LINES`) wired first in `.githooks/pre-commit` so bloat
+fails before any cargo audit build. Evidence after clean +
+full gates: `target` ~3.5G, 0 files >200MB, largest debug bin
+155MB (was ~400MB×136). Negative path verified
+(`PI_MAX_FILE_BYTES=1000` → exit 1). No parity row promoted;
+metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318). Gate: size-gate OK + negative exit 1, clippy all-targets 0
+warnings (pi-agent/pi-tui/pi-coding-agent), fmt clean, diff clean,
+docs-lint 0 issues, conversion 100.00% (166/166), lib 918/918,
+pi-agent 276, pi-tui 409 (one parallel-load flake re-run green
+×2 solo), pi-ai 487, restart 13/13, import 6/6, resources 11/11,
+flag 7/7, clean_home 12/12, print 14/14, json 9/9, config 5/5,
+exhaustive 6/6, runtime 3/3, extensions 10/10, file safety 2/2,
+session_id 1/1, invalid 12/12, export 5/5, export invalid 1/1,
+sb 13 suites.
+
 ### Session slice AH: pure-sdk v3 bad-ts/missing-cwd open+import via migration (last updated 2026-09-23, committed `4c1d372`)
 
 Slice AH closes the slice AG follow-up (oracle

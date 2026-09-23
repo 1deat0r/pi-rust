@@ -21,7 +21,8 @@ cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
 ## Documentation map (2026-09-17)
 
 Living docs (edit these; `README.md` + this file are markdownlint-clean
-via `bash scripts/docs-lint.sh`):
+via `bash scripts/docs-lint.sh`; tracked-file size is enforced by
+`bash scripts/size-gate.sh` / pre-commit):
 
 - `README.md` — project status; numbers come from the audits, never memory.
 - `AGENTS.md` (this file) — session protocol.

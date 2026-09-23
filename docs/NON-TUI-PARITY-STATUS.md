@@ -2,6 +2,14 @@
 
 Status: conservative audit checkpoint 2026-08-30 (Pacific/Auckland).
 
+Workspace infrastructure note (2026-09-23, slice AI): no row metrics
+changed. The pre-commit hook now runs `scripts/size-gate.sh` first
+(600000-byte tracked-file / 13000-line `.rs` ceilings; staged
+`target/`/`rust_out`/object binaries rejected) and `[profile.dev]`
+uses `debug = "line-tables-only"` with `incremental = false` after a
+~50G `target/` cleanup (`cargo clean` reclaimed 37.1GiB). This is
+disk/source hygiene only, not a parity promotion.
+
 This register covers exactly the 266 capability IDs outside the 52-row TUI
 register. It is joined mechanically to
 [EXHAUSTIVE-PARITY-INVENTORY.md](EXHAUSTIVE-PARITY-INVENTORY.md), and its
