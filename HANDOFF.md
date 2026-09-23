@@ -2,7 +2,7 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
-### Session slice AC — first-parseable header scan (uncommitted)
+### Session slice AC — first-parseable header scan (committed + pushed)
 
 Slice-Z follow-up closed (oracle file-operations leading-lines +
 `readSessionHeader` scan; genuine RED 4/4): shared
@@ -20,8 +20,8 @@ session_id 1/1, flag 7/7, clean_home 12/12, print 14/14, json
 coding-agent 918, clippy 0 warnings (3 crates), fmt, diff,
 docs-lint 0 issues, conversion 100.00% (166/166). No row
 promoted (SES-001/SES-007/CLI-012/CLI-014 notes extended);
-metrics unchanged (58/318). Next: commit + push, then continue
-the sweep.
+metrics unchanged (58/318). Committed `fab5fcf`, pushed, hashes
+match. Next: continue the sweep.
 
 ### Session slice AB — session-id read-only pin + warning cleanup (committed + pushed)
 
